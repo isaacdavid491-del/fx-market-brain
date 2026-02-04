@@ -9,11 +9,17 @@ import numpy as np
 import pandas as pd
 import requests
 from fastapi import FastAPI, HTTPException, Query, Header
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse
 from apscheduler.schedulers.background import BackgroundScheduler
 from sklearn.ensemble import HistGradientBoostingClassifier
 
-DB_PATH = os.getenv("DB_PATH", "/data/fx.db")
+# =============================
+# Config
+# =============================
+
+# ✅ FIX 1: Use /tmp by default (Render always writable). You can still override via DB_PATH env var.
+DB_PATH = os.getenv("DB_PATH", "/tmp/fx.db")
+
 OANDA_TOKEN = os.getenv("OANDA_TOKEN", "")
 OANDA_ACCOUNT_ID = os.getenv("OANDA_ACCOUNT_ID", "")
 ADMIN_KEY = os.getenv("ADMIN_KEY", "")
@@ -25,15 +31,25 @@ OANDA_API_BASE = "https://api-fxpractice.oanda.com/v3"
 
 app = FastAPI(title="FX Market Brain")
 
-# -----------------------------
+# =============================
 # DB
-# -----------------------------
+# =============================
+
 def db() -> sqlite3.Connection:
+    # ✅ FIX 2: Ensure DB directory exists before connecting (important on Render)
+    db_dir = os.path.dirname(DB_PATH)
+    if db_dir:
+        os.makedirs(db_dir, existf؜e := True)  # NOTE: keep safe; if dirname is "", skip
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.execute("PRAGMA journal_mode=WAL;")
     return conn
 
 def init_db() -> None:
+    # ✅ FIX 2 (again): ensure directory exists at startup too
+    db_dir = os.path.dirname(DB_PATH)
+    if db_dir:
+        os.makedirs(db_dir, exist_ok=True)
+
     conn = db()
     conn.execute("""
       CREATE TABLE IF NOT EXISTS candles_1m (
@@ -51,9 +67,10 @@ def init_db() -> None:
     conn.commit()
     conn.close()
 
-# -----------------------------
+# =============================
 # OANDA client
-# -----------------------------
+# =============================
+
 def oanda_headers() -> Dict[str, str]:
     if not OANDA_TOKEN:
         raise RuntimeError("Missing OANDA_TOKEN")
@@ -77,7 +94,6 @@ def parse_oanda_candles(candles: List[Dict[str, Any]]) -> pd.DataFrame:
         if not x.get("complete"):
             continue
         t = x["time"]
-        # RFC3339 -> unix seconds
         dt = datetime.fromisoformat(t.replace("Z", "+00:00"))
         ts = int(dt.timestamp())
         mid = x["mid"]
@@ -132,9 +148,10 @@ def load_1m(symbol: str, start_ts: int, end_ts: int) -> pd.DataFrame:
     conn.close()
     return df
 
-# -----------------------------
+# =============================
 # Multi-timeframe resample (derived from 1m)
-# -----------------------------
+# =============================
+
 TF_MAP = {
     "1m": "1T",
     "5m": "5T",
@@ -163,9 +180,10 @@ def resample_ohlcv(df_1m: pd.DataFrame, tf: str) -> pd.DataFrame:
     out["t"] = (out.index.view("int64") // 10**9).astype(int)
     return out.reset_index(drop=True)[["t","o","h","l","c","v"]]
 
-# -----------------------------
+# =============================
 # AI baseline (learns from data, multi-TF features)
-# -----------------------------
+# =============================
+
 _model: Optional[HistGradientBoostingClassifier] = None
 _model_meta: Dict[str, Any] = {}
 
@@ -185,7 +203,6 @@ def build_features(df_1m: pd.DataFrame) -> Optional[pd.DataFrame]:
         d["vol"] = d["ret1"].rolling(window).std()
         d["mom"] = d["c"].pct_change(window)
         d["rng"] = (d["h"] - d["l"]) / d["c"].replace(0, np.nan)
-        # position of close in its rolling high/low
         roll_hi = d["h"].rolling(window).max()
         roll_lo = d["l"].rolling(window).min()
         d["pos"] = (d["c"] - roll_lo) / (roll_hi - roll_lo).replace(0, np.nan)
@@ -195,7 +212,6 @@ def build_features(df_1m: pd.DataFrame) -> Optional[pd.DataFrame]:
         return d
 
     feats = None
-    # windows are per timeframe; kept modest
     specs = [("1m", 60), ("5m", 60), ("15m", 60), ("1h", 60), ("4h", 60), ("1d", 30)]
     for tf_name, w in specs:
         f = add_tf_feats(tf_name, w)
@@ -206,7 +222,6 @@ def build_features(df_1m: pd.DataFrame) -> Optional[pd.DataFrame]:
     if feats is None or feats.shape[0] < 500:
         return None
 
-    # Label: future direction at horizon H bars on 1m (generic objective)
     H = 60  # 60 minutes ahead
     base = df_1m[["t","c"]].copy()
     base["fut_c"] = base["c"].shift(-H)
@@ -227,7 +242,6 @@ def train_model(symbol: str) -> Dict[str, Any]:
     X = feats.drop(columns=["y"])
     y = feats["y"].astype(int)
 
-    # Simple walk-forward split
     split = int(len(feats) * 0.8)
     X_train, y_train = X.iloc[:split], y.iloc[:split]
     X_test, y_test = X.iloc[split:], y.iloc[split:]
@@ -248,7 +262,6 @@ def train_model(symbol: str) -> Dict[str, Any]:
     return {"ok": True, **_model_meta}
 
 def infer_signal(symbol: str) -> Dict[str, Any]:
-    # If no model yet, try training
     global _model
     if _model is None:
         train_model(symbol)
@@ -264,7 +277,6 @@ def infer_signal(symbol: str) -> Dict[str, Any]:
     X = latest.drop(columns=["y"])
     proba_up = float(_model.predict_proba(X.drop(columns=["t"]))[0, 1]) if _model else 0.5
 
-    # Convert probability to side/neutral band
     if proba_up >= 0.55:
         side = "LONG"
         conf = (proba_up - 0.5) * 2.0
@@ -275,13 +287,11 @@ def infer_signal(symbol: str) -> Dict[str, Any]:
         side = "NEUTRAL"
         conf = 0.0
 
-    # Entry/SL/TP: volatility-based (learned from recent behavior, not rules)
     df_recent = df.tail(2000).copy()
     df_recent["ret1"] = df_recent["c"].pct_change()
     vol = float(df_recent["ret1"].rolling(300).std().iloc[-1] or 0.0005)
     last = float(df_recent["c"].iloc[-1])
 
-    # Risk sizing heuristic (baseline)
     sl_dist = max(2.5 * vol * last, 0.0008 * last)
     tp_dist = max(4.0 * vol * last, 0.0012 * last)
 
@@ -311,26 +321,23 @@ def infer_signal(symbol: str) -> Dict[str, Any]:
         "model": _model_meta,
     }
 
-# -----------------------------
+# =============================
 # Ingestion scheduler
-# -----------------------------
+# =============================
+
 def ingest_once(symbol: str) -> Dict[str, Any]:
-    # pull latest chunk; store
-    # Use "to" = now, count=500 to cover gaps
     candles = oanda_get_candles(symbol, "M1", count=500)
     df = parse_oanda_candles(candles)
     n = upsert_1m(symbol, df)
     return {"ok": True, "inserted": n, "latest_ts": latest_ts(symbol)}
 
 def ensure_seed_history(symbol: str) -> Dict[str, Any]:
-    # Pull enough M1 candles to fill HISTORY_DAYS
-    # OANDA count max is limited; we loop backward.
     target_start = datetime.now(timezone.utc) - timedelta(days=HISTORY_DAYS)
     to_time = datetime.now(timezone.utc)
 
     total = 0
-    for _ in range(200):  # safety loop
-        candles = oanda_get_candles(symbol, "M1", count=5000 if False else 500, to_rfc3339=to_time.isoformat())
+    for _ in range(200):
+        candles = oanda_get_candles(symbol, "M1", count=500, to_rfc3339=to_time.isoformat())
         df = parse_oanda_candles(candles)
         if df.empty:
             break
@@ -338,7 +345,6 @@ def ensure_seed_history(symbol: str) -> Dict[str, Any]:
         oldest = int(df["t"].min())
         if datetime.fromtimestamp(oldest, tz=timezone.utc) <= target_start:
             break
-        # move "to" slightly before oldest to paginate backward
         to_time = datetime.fromtimestamp(oldest - 60, tz=timezone.utc)
         time.sleep(0.2)
     return {"ok": True, "seeded": total}
@@ -349,16 +355,15 @@ def scheduled_ingest():
     try:
         ingest_once(DEFAULT_INSTRUMENT)
     except Exception:
-        # avoid crashing scheduler
         pass
 
-# -----------------------------
+# =============================
 # API
-# -----------------------------
+# =============================
+
 @app.on_event("startup")
 def _startup():
     init_db()
-    # seed some history on first start (best effort)
     try:
         ensure_seed_history(DEFAULT_INSTRUMENT)
     except Exception:
@@ -386,12 +391,8 @@ def history(
     if df1.empty:
         return {"t": [], "o": [], "h": [], "l": [], "c": [], "v": []}
 
-    if tf != "1m":
-        df = resample_ohlcv(df1, tf)
-    else:
-        df = df1
+    df = resample_ohlcv(df1, tf) if tf != "1m" else df1
 
-    # lightweight charts expects seconds epoch
     return {
         "t": df["t"].astype(int).tolist(),
         "o": df["o"].astype(float).tolist(),
@@ -417,9 +418,10 @@ def admin_train(x_admin_key: Optional[str] = Header(default=None), symbol: str =
         raise HTTPException(status_code=401, detail="Unauthorized")
     return train_model(symbol)
 
-# -----------------------------
-# Simple frontend (Lightweight Charts via CDN)
-# -----------------------------
+# =============================
+# Frontend (Lightweight Charts via CDN)
+# =============================
+
 _INDEX_HTML = """
 <!doctype html>
 <html>
@@ -483,7 +485,6 @@ async function load(){
   const s = await fetch(`/api/signal`).then(r=>r.json());
   const sig = document.getElementById('sig');
   sig.innerHTML = `Signal: <b>${s.side}</b> | conf=${s.confidence} | entry=${s.entry}` + (s.sl?` | SL=${s.sl}`:'') + (s.tp?` | TP=${s.tp}`:'');
-  // draw SL/TP as flat lines at latest time range
   const lastTime = h.t[h.t.length-1];
   if (s.sl){
     slLine.setData([{time: h.t[0], value: s.sl}, {time: lastTime, value: s.sl}]);
