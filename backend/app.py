@@ -17,7 +17,7 @@ from sklearn.ensemble import HistGradientBoostingClassifier
 # Config
 # =============================
 
-# ✅ FIX 1: Use /tmp by default (Render always writable). You can still override via DB_PATH env var.
+# FIX 1: Use /tmp by default (Render always writable). You can still override via DB_PATH env var.
 DB_PATH = os.getenv("DB_PATH", "/tmp/fx.db")
 
 OANDA_TOKEN = os.getenv("OANDA_TOKEN", "")
@@ -36,16 +36,16 @@ app = FastAPI(title="FX Market Brain")
 # =============================
 
 def db() -> sqlite3.Connection:
-    # ✅ FIX 2: Ensure DB directory exists before connecting (important on Render)
+    # FIX 2: Ensure DB directory exists before connecting (important on Render)
     db_dir = os.path.dirname(DB_PATH)
     if db_dir:
-        os.makedirs(db_dir, existf؜e := True)  # NOTE: keep safe; if dirname is "", skip
+        os.makedirs(db_dir, exist_ok=True)  # keep safe; if dirname is "", skip
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.execute("PRAGMA journal_mode=WAL;")
     return conn
 
 def init_db() -> None:
-    # ✅ FIX 2 (again): ensure directory exists at startup too
+    # FIX 2 (again): ensure directory exists at startup too
     db_dir = os.path.dirname(DB_PATH)
     if db_dir:
         os.makedirs(db_dir, exist_ok=True)
