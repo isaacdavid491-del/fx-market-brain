@@ -1,0 +1,101 @@
+//@version=5
+indicator("ICT Live Analysis Engine", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500)
+
+// ── Inputs ──────────────────────────────────────────────────────────────────
+show_kz     = input.bool(true,  "Show Kill Zones")
+london_kz   = input.session("0200-0500", "London Kill Zone")
+ny_am_kz    = input.session("0700-1100", "NY AM Kill Zone")
+ny_pm_kz    = input.session("1330-1600", "NY PM Kill Zone")
+swing_len   = input.int(5,    "Swing Length",  minval=2)
+show_sweeps = input.bool(true,  "Show Liquidity Sweeps")
+show_mss    = input.bool(true,  "Show MSS Labels")
+show_fvg    = input.bool(true,  "Show FVG Boxes")
+show_sig    = input.bool(true,  "Show Trade Signals")
+rr          = input.float(2.0,  "Min Risk:Reward", minval=1.0, step=0.5)
+
+// ── Kill Zones ───────────────────────────────────────────────────────────────
+in_sess(s) => not na(time(timeframe.period, s, "America/New_York"))
+in_lon  = in_sess(london_kz)
+in_nyam = in_sess(ny_am_kz)
+in_nypm = in_sess(ny_pm_kz)
+in_kz   = in_lon or in_nyam or in_nypm
+
+bgcolor(show_kz and in_lon  ? color.new(color.blue,   92) : na, title="London KZ")
+bgcolor(show_kz and in_nyam ? color.new(color.orange, 92) : na, title="NY AM KZ")
+bgcolor(show_kz and in_nypm ? color.new(color.purple, 92) : na, title="NY PM KZ")
+
+// ── Swing Points (Liquidity Pools) ───────────────────────────────────────────
+ph = ta.pivothigh(high, swing_len, swing_len)
+pl = ta.pivotlow (low,  swing_len, swing_len)
+
+var float last_ph = na
+var float last_pl = na
+if not na(ph)
+    last_ph := ph
+if not na(pl)
+    last_pl := pl
+
+// ── Liquidity Sweeps ─────────────────────────────────────────────────────────
+bsl_sweep = not na(last_ph) and high > last_ph and close < last_ph
+ssl_sweep = not na(last_pl) and low  < last_pl and close > last_pl
+
+if bsl_sweep and show_sweeps
+    label.new(bar_index, high, "BSL Swept ⚡", color=color.new(color.red, 10), style=label.style_label_down, textcolor=color.white, size=size.small)
+if ssl_sweep and show_sweeps
+    label.new(bar_index, low,  "SSL Swept ⚡", color=color.new(color.green, 10), style=label.style_label_up,   textcolor=color.white, size=size.small)
+
+// ── Fair Value Gaps (FVG) ────────────────────────────────────────────────────
+// Bullish FVG (SIBI): gap up — low[0] > high[2]
+//   Zone lower boundary = high[2], upper boundary = low[0]
+bull_fvg_lo = high[2]   // lower boundary of bullish FVG zone
+bull_fvg_hi = low[0]    // upper boundary of bullish FVG zone
+bull_fvg    = bull_fvg_hi > bull_fvg_lo
+
+// Bearish FVG (BISI): gap down — high[0] < low[2]
+//   Zone lower boundary = high[0], upper boundary = low[2]
+bear_fvg_lo = high[0]   // lower boundary of bearish FVG zone
+bear_fvg_hi = low[2]    // upper boundary of bearish FVG zone
+bear_fvg    = bear_fvg_lo < bear_fvg_hi
+
+if bull_fvg and show_fvg
+    box.new(bar_index[2], bull_fvg_hi, bar_index + 20, bull_fvg_lo, bgcolor=color.new(color.green, 82), border_color=color.new(color.green, 50), border_width=1)
+if bear_fvg and show_fvg
+    box.new(bar_index[2], bear_fvg_hi, bar_index + 20, bear_fvg_lo, bgcolor=color.new(color.red, 82),   border_color=color.new(color.red, 50),   border_width=1)
+
+// ── Market Structure Shifts (MSS) ────────────────────────────────────────────
+bull_mss = ssl_sweep[1] and not na(last_ph) and close > last_ph
+bear_mss = bsl_sweep[1] and not na(last_pl) and close < last_pl
+
+if bull_mss and show_mss
+    label.new(bar_index, low,  "▲ Bullish MSS", color=color.green, style=label.style_label_up,   textcolor=color.white, size=size.small)
+if bear_mss and show_mss
+    label.new(bar_index, high, "▼ Bearish MSS", color=color.red,   style=label.style_label_down, textcolor=color.white, size=size.small)
+
+// ── Trade Signals ────────────────────────────────────────────────────────────
+long_sig  = bull_mss and bull_fvg and in_kz
+short_sig = bear_mss and bear_fvg and in_kz
+
+if long_sig and show_sig
+    ep = (bull_fvg_lo + bull_fvg_hi) / 2    // CE of FVG
+    sl = bull_fvg_lo - (bull_fvg_hi - bull_fvg_lo)  // one zone-width below
+    tp = ep + (ep - sl) * rr
+    label.new(bar_index, sl - (sl * 0.0001),
+      "🟢 LONG\nEntry: " + str.tostring(ep, "#.0") +
+      "\nSL: "    + str.tostring(sl, "#.0") +
+      "\nTP: "    + str.tostring(tp, "#.0"),
+      color=color.new(color.green, 0), style=label.style_label_up, textcolor=color.white, size=size.normal)
+
+if short_sig and show_sig
+    ep = (bear_fvg_lo + bear_fvg_hi) / 2    // CE of FVG
+    // FIX: SL must be ABOVE the FVG zone (above bear_fvg_hi = low[2])
+    sl = bear_fvg_hi + (bear_fvg_hi - bear_fvg_lo)  // one zone-width above
+    tp = ep - (sl - ep) * rr
+    label.new(bar_index, sl + (sl * 0.0001),
+      "🔴 SHORT\nEntry: " + str.tostring(ep, "#.0") +
+      "\nSL: "     + str.tostring(sl, "#.0") +
+      "\nTP: "     + str.tostring(tp, "#.0"),
+      color=color.new(color.red, 0), style=label.style_label_down, textcolor=color.white, size=size.normal)
+
+// ── Alerts ───────────────────────────────────────────────────────────────────
+alertcondition(long_sig,  "ICT Long Signal",  "🟢 ICT LONG: SSL Swept + Bullish MSS + FVG in Kill Zone!")
+alertcondition(short_sig, "ICT Short Signal", "🔴 ICT SHORT: BSL Swept + Bearish MSS + FVG in Kill Zone!")

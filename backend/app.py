@@ -3,6 +3,7 @@ import json
 import time
 import sqlite3
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from typing import Optional, List, Dict, Any
 
 import numpy as np
@@ -322,6 +323,147 @@ def infer_signal(symbol: str) -> Dict[str, Any]:
     }
 
 # =============================
+# ICT Analysis Engine
+# =============================
+
+_NY_TZ = ZoneInfo("America/New_York")
+
+_KILL_ZONES: Dict[str, tuple] = {
+    "london": ( 2 * 60,  5 * 60),        # 02:00–05:00 ET
+    "ny_am":  ( 7 * 60, 11 * 60),        # 07:00–11:00 ET
+    "ny_pm":  (13 * 60 + 30, 16 * 60),   # 13:30–16:00 ET
+}
+
+def _kz_name(ts: int) -> Optional[str]:
+    dt = datetime.fromtimestamp(ts, tz=_NY_TZ)
+    hm = dt.hour * 60 + dt.minute
+    for name, (start, end) in _KILL_ZONES.items():
+        if start <= hm < end:
+            return name
+    return None
+
+
+def compute_ict(df: pd.DataFrame, swing_len: int = 5, min_rr: float = 2.0) -> Dict[str, Any]:
+    """
+    Port of Pine Script ICT Live Analysis Engine.
+    Detects kill zones, pivot-based liquidity pools, sweeps, FVGs, MSS, and trade signals.
+    """
+    if df.shape[0] < swing_len * 2 + 10:
+        return {"error": "Not enough data for ICT analysis"}
+
+    d = df.copy().reset_index(drop=True)
+    n = len(d)
+
+    # ── Kill zones ────────────────────────────────────────────────────────────
+    d["kz"] = d["t"].apply(_kz_name)
+    d["in_kz"] = d["kz"].notna()
+
+    # ── Pivot highs / lows (vectorised via centered rolling window) ───────────
+    w = 2 * swing_len + 1
+    roll_max = d["h"].rolling(w, center=True, min_periods=w).max()
+    roll_min = d["l"].rolling(w, center=True, min_periods=w).min()
+    d["pivot_high"] = np.where(d["h"] == roll_max, d["h"], np.nan)
+    d["pivot_low"]  = np.where(d["l"] == roll_min, d["l"], np.nan)
+
+    # Forward-fill – mirrors Pine Script's `var float last_ph/pl`
+    d["last_ph"] = pd.Series(d["pivot_high"]).ffill()
+    d["last_pl"] = pd.Series(d["pivot_low"]).ffill()
+
+    # ── Liquidity sweeps ──────────────────────────────────────────────────────
+    d["bsl_sweep"] = d["last_ph"].notna() & (d["h"] > d["last_ph"]) & (d["c"] < d["last_ph"])
+    d["ssl_sweep"] = d["last_pl"].notna() & (d["l"] < d["last_pl"]) & (d["c"] > d["last_pl"])
+
+    # ── Fair Value Gaps ───────────────────────────────────────────────────────
+    # Bullish FVG (SIBI): low[current] > high[2 bars ago]
+    d["bull_fvg_lo"] = d["h"].shift(2)   # lower boundary = high of 2-bar-ago candle
+    d["bull_fvg_hi"] = d["l"]            # upper boundary = low of current candle
+    d["bull_fvg"]    = d["bull_fvg_hi"] > d["bull_fvg_lo"]
+
+    # Bearish FVG (BISI): high[current] < low[2 bars ago]
+    d["bear_fvg_lo"] = d["h"]            # lower boundary = high of current candle
+    d["bear_fvg_hi"] = d["l"].shift(2)   # upper boundary = low of 2-bar-ago candle
+    d["bear_fvg"]    = d["bear_fvg_lo"] < d["bear_fvg_hi"]
+
+    # ── Market Structure Shifts ───────────────────────────────────────────────
+    d["bull_mss"] = (
+        d["ssl_sweep"].shift(1).fillna(False)
+        & d["last_ph"].notna()
+        & (d["c"] > d["last_ph"])
+    )
+    d["bear_mss"] = (
+        d["bsl_sweep"].shift(1).fillna(False)
+        & d["last_pl"].notna()
+        & (d["c"] < d["last_pl"])
+    )
+
+    # ── Trade signals ─────────────────────────────────────────────────────────
+    d["long_sig"]  = d["bull_mss"] & d["bull_fvg"] & d["in_kz"]
+    d["short_sig"] = d["bear_mss"] & d["bear_fvg"] & d["in_kz"]
+
+    # ── Collect results (last 200 bars) ───────────────────────────────────────
+    recent = d.tail(200)
+
+    signals: List[Dict[str, Any]] = []
+    for row in recent.itertuples(index=False):
+        if row.long_sig:
+            lo, hi = float(row.bull_fvg_lo), float(row.bull_fvg_hi)
+            ep = (lo + hi) / 2
+            sl = lo - (hi - lo)       # one FVG-width below zone
+            tp = ep + (ep - sl) * min_rr
+            signals.append({"t": int(row.t), "side": "LONG",
+                             "entry": round(ep, 6), "sl": round(sl, 6), "tp": round(tp, 6),
+                             "kz": row.kz, "fvg_lo": round(lo, 6), "fvg_hi": round(hi, 6)})
+        elif row.short_sig:
+            lo, hi = float(row.bear_fvg_lo), float(row.bear_fvg_hi)
+            ep = (lo + hi) / 2
+            # Bug-fix vs original Pine Script: SL must be ABOVE the FVG zone for a short
+            sl = hi + (hi - lo)       # one FVG-width above zone
+            tp = ep - (sl - ep) * min_rr
+            signals.append({"t": int(row.t), "side": "SHORT",
+                             "entry": round(ep, 6), "sl": round(sl, 6), "tp": round(tp, 6),
+                             "kz": row.kz, "fvg_lo": round(lo, 6), "fvg_hi": round(hi, 6)})
+
+    fvgs: List[Dict[str, Any]] = []
+    for row in d.tail(100).itertuples(index=False):
+        if row.bull_fvg and not pd.isna(row.bull_fvg_lo):
+            fvgs.append({"t": int(row.t), "type": "bullish",
+                         "zone_hi": round(float(row.bull_fvg_hi), 6),
+                         "zone_lo": round(float(row.bull_fvg_lo), 6)})
+        if row.bear_fvg and not pd.isna(row.bear_fvg_hi):
+            fvgs.append({"t": int(row.t), "type": "bearish",
+                         "zone_hi": round(float(row.bear_fvg_hi), 6),
+                         "zone_lo": round(float(row.bear_fvg_lo), 6)})
+
+    sweeps: List[Dict[str, Any]] = []
+    for row in d.tail(100).itertuples(index=False):
+        if row.bsl_sweep and not pd.isna(row.last_ph):
+            sweeps.append({"t": int(row.t), "type": "BSL", "level": round(float(row.last_ph), 6)})
+        if row.ssl_sweep and not pd.isna(row.last_pl):
+            sweeps.append({"t": int(row.t), "type": "SSL", "level": round(float(row.last_pl), 6)})
+
+    mss_list: List[Dict[str, Any]] = []
+    for row in d.tail(100).itertuples(index=False):
+        if row.bull_mss:
+            mss_list.append({"t": int(row.t), "type": "bullish"})
+        if row.bear_mss:
+            mss_list.append({"t": int(row.t), "type": "bearish"})
+
+    latest = d.iloc[-1]
+    return {
+        "symbol": DEFAULT_INSTRUMENT,
+        "timestamp": int(latest["t"]),
+        "kill_zone": latest["kz"],
+        "in_kill_zone": bool(latest["in_kz"]),
+        "last_pivot_high": round(float(latest["last_ph"]), 6) if pd.notna(latest["last_ph"]) else None,
+        "last_pivot_low":  round(float(latest["last_pl"]), 6) if pd.notna(latest["last_pl"]) else None,
+        "recent_signals": signals[-10:],
+        "recent_fvgs":    fvgs[-20:],
+        "recent_sweeps":  sweeps[-20:],
+        "recent_mss":     mss_list[-20:],
+    }
+
+
+# =============================
 # Ingestion scheduler
 # =============================
 
@@ -418,6 +560,19 @@ def admin_train(x_admin_key: Optional[str] = Header(default=None), symbol: str =
         raise HTTPException(status_code=401, detail="Unauthorized")
     return train_model(symbol)
 
+@app.get("/api/ict")
+def ict(
+    symbol: str = Query(DEFAULT_INSTRUMENT),
+    swing_len: int = Query(5, ge=2, le=20, description="Pivot swing length"),
+    min_rr: float = Query(2.0, ge=1.0, description="Minimum risk:reward"),
+):
+    end_ts = int(datetime.now(timezone.utc).timestamp())
+    start_ts = int((datetime.now(timezone.utc) - timedelta(days=7)).timestamp())
+    df = load_1m(symbol, start_ts, end_ts)
+    if df.empty:
+        raise HTTPException(status_code=503, detail="No data yet — wait for ingestion to complete.")
+    return compute_ict(df, swing_len=swing_len, min_rr=min_rr)
+
 # =============================
 # Frontend (Lightweight Charts via CDN)
 # =============================
@@ -431,11 +586,20 @@ _INDEX_HTML = """
   <title>FX Market Brain</title>
   <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
   <style>
-    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; }
-    #top { padding:12px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
-    #chart { height: 70vh; }
-    .pill { padding:6px 10px; border:1px solid #ddd; border-radius:999px; }
-    button { padding:8px 12px; border-radius:10px; border:1px solid #ddd; background:#fff; }
+    *, *::before, *::after { box-sizing: border-box; }
+    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; background:#fafafa; color:#222; }
+    #top  { padding:10px 14px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;
+            background:#fff; border-bottom:1px solid #e5e5e5; }
+    #chart { height: 62vh; }
+    .pill { padding:5px 10px; border:1px solid #ddd; border-radius:999px; font-size:13px; }
+    button { padding:7px 12px; border-radius:8px; border:1px solid #ddd; background:#fff; cursor:pointer; }
+    button:hover { background:#f5f5f5; }
+    #ict-panel { display:flex; gap:10px; flex-wrap:wrap; padding:10px 14px; background:#fff;
+                 border-top:1px solid #e5e5e5; }
+    .card { padding:10px 14px; border:1px solid #eee; border-radius:10px; background:#fafafa;
+            min-width:180px; font-size:12px; line-height:1.6; }
+    .card h4 { margin:0 0 4px; font-size:12px; text-transform:uppercase; letter-spacing:.05em; color:#888; }
+    .bull { color:#2e7d32; } .bear { color:#c62828; } .neu { color:#555; }
   </style>
 </head>
 <body>
@@ -456,52 +620,143 @@ _INDEX_HTML = """
       </select>
     </label>
     <button id="refresh">Refresh</button>
-    <div id="sig" class="pill">Signal: …</div>
+    <div id="sig"  class="pill">ML Signal: …</div>
+    <div id="kz-badge" class="pill neu">KZ: —</div>
+    <div id="ict-sig-badge" class="pill neu">ICT: —</div>
   </div>
 
   <div id="chart"></div>
 
+  <div id="ict-panel">
+    <div class="card" id="card-signal"><h4>Latest ICT Signal</h4><span class="neu">—</span></div>
+    <div class="card" id="card-sweeps"><h4>Recent Sweeps</h4><span class="neu">—</span></div>
+    <div class="card" id="card-mss"   ><h4>Recent MSS</h4>   <span class="neu">—</span></div>
+    <div class="card" id="card-fvg"   ><h4>Recent FVGs</h4>  <span class="neu">—</span></div>
+    <div class="card" id="card-pivot" ><h4>Pivot Levels</h4> <span class="neu">—</span></div>
+  </div>
+
 <script>
 const el = document.getElementById('chart');
-const chart = LightweightCharts.createChart(el, { width: el.clientWidth, height: el.clientHeight });
-const series = chart.addCandlestickSeries();
-const slLine = chart.addLineSeries();
-const tpLine = chart.addLineSeries();
+const chart = LightweightCharts.createChart(el, {
+  width: el.clientWidth, height: el.clientHeight,
+  layout: { background: { color: '#fff' }, textColor: '#333' },
+  grid: { vertLines: { color: '#f0f0f0' }, horzLines: { color: '#f0f0f0' } },
+});
+const series  = chart.addCandlestickSeries();
+const slLine  = chart.addLineSeries({ color: '#ef5350', lineWidth: 1, lineStyle: 2 });
+const tpLine  = chart.addLineSeries({ color: '#26a69a', lineWidth: 1, lineStyle: 2 });
+let fvgLines  = [];
 
-function toBars(data){
-  const bars = [];
-  for (let i=0;i<data.t.length;i++){
-    bars.push({ time: data.t[i], open: data.o[i], high: data.h[i], low: data.l[i], close: data.c[i] });
-  }
-  return bars;
+function toBars(data) {
+  return data.t.map((t,i) => ({ time: t, open: data.o[i], high: data.h[i], low: data.l[i], close: data.c[i] }));
 }
+function fmt(ts) { return new Date(ts*1000).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}); }
 
-async function load(){
-  const tf = document.getElementById('tf').value;
+async function load() {
+  const tf      = document.getElementById('tf').value;
   const minutes = document.getElementById('mins').value;
-  const h = await fetch(`/api/history?tf=${tf}&minutes=${minutes}`).then(r=>r.json());
-  series.setData(toBars(h));
+  const [h, s]  = await Promise.all([
+    fetch(`/api/history?tf=${tf}&minutes=${minutes}`).then(r => r.json()),
+    fetch('/api/signal').then(r => r.json()),
+  ]);
 
-  const s = await fetch(`/api/signal`).then(r=>r.json());
+  if (h.t && h.t.length) {
+    series.setData(toBars(h));
+    const t0 = h.t[0], tN = h.t[h.t.length - 1];
+    slLine.setData(s.sl ? [{time:t0,value:s.sl},{time:tN,value:s.sl}] : []);
+    tpLine.setData(s.tp ? [{time:t0,value:s.tp},{time:tN,value:s.tp}] : []);
+  }
+
   const sig = document.getElementById('sig');
-  sig.innerHTML = `Signal: <b>${s.side}</b> | conf=${s.confidence} | entry=${s.entry}` + (s.sl?` | SL=${s.sl}`:'') + (s.tp?` | TP=${s.tp}`:'');
-  const lastTime = h.t[h.t.length-1];
-  if (s.sl){
-    slLine.setData([{time: h.t[0], value: s.sl}, {time: lastTime, value: s.sl}]);
-  } else {
-    slLine.setData([]);
-  }
-  if (s.tp){
-    tpLine.setData([{time: h.t[0], value: s.tp}, {time: lastTime, value: s.tp}]);
-  } else {
-    tpLine.setData([]);
-  }
+  const cls = s.side === 'LONG' ? 'bull' : s.side === 'SHORT' ? 'bear' : 'neu';
+  sig.innerHTML = `ML: <b class="${cls}">${s.side}</b> conf=${s.confidence} entry=${s.entry}`;
 }
 
-document.getElementById('refresh').onclick = load;
+async function loadIct() {
+  let ict;
+  try { ict = await fetch('/api/ict').then(r => r.json()); }
+  catch (_) { return; }
+  if (ict.error) return;
+
+  // ── KZ badge ──────────────────────────────────────────────────────────────
+  const kzEl = document.getElementById('kz-badge');
+  const kzNames = { london: 'London KZ', ny_am: 'NY AM KZ', ny_pm: 'NY PM KZ' };
+  if (ict.in_kill_zone) {
+    kzEl.textContent = kzNames[ict.kill_zone] || ict.kill_zone;
+    kzEl.style.background = '#e8f5e9'; kzEl.style.borderColor = '#a5d6a7';
+  } else {
+    kzEl.textContent = 'Off-session'; kzEl.style.background = ''; kzEl.style.borderColor = '#ddd';
+  }
+
+  // ── ICT signal badge ───────────────────────────────────────────────────────
+  const ictBadge = document.getElementById('ict-sig-badge');
+  const lastSig = ict.recent_signals && ict.recent_signals.length
+    ? ict.recent_signals[ict.recent_signals.length - 1] : null;
+  if (lastSig) {
+    const cls = lastSig.side === 'LONG' ? 'bull' : 'bear';
+    ictBadge.innerHTML = `ICT: <b class="${cls}">${lastSig.side}</b> @ ${fmt(lastSig.t)}`;
+    ictBadge.style.background = lastSig.side === 'LONG' ? '#e8f5e9' : '#ffebee';
+  } else {
+    ictBadge.textContent = 'ICT: no signal'; ictBadge.style.background = '';
+  }
+
+  // ── FVG price lines on chart ───────────────────────────────────────────────
+  fvgLines.forEach(l => { try { series.removePriceLine(l); } catch(_) {} });
+  fvgLines = [];
+  (ict.recent_fvgs || []).slice(-6).forEach(f => {
+    const col = f.type === 'bullish' ? 'rgba(46,125,50,0.55)' : 'rgba(198,40,40,0.55)';
+    const lbl = f.type === 'bullish' ? 'FVG ↑' : 'FVG ↓';
+    fvgLines.push(series.createPriceLine({ price: f.zone_hi, color: col, lineWidth: 1, lineStyle: 2, title: lbl }));
+    fvgLines.push(series.createPriceLine({ price: f.zone_lo, color: col, lineWidth: 1, lineStyle: 2, title: '' }));
+  });
+
+  // ── Latest signal card ─────────────────────────────────────────────────────
+  const cSig = document.getElementById('card-signal');
+  if (lastSig) {
+    const cls = lastSig.side === 'LONG' ? 'bull' : 'bear';
+    cSig.innerHTML = `<h4>Latest ICT Signal</h4>
+      <b class="${cls}">${lastSig.side}</b> @ ${fmt(lastSig.t)} [${lastSig.kz||'—'}]<br>
+      Entry: ${lastSig.entry}<br>SL: ${lastSig.sl} &nbsp; TP: ${lastSig.tp}`;
+  } else {
+    cSig.innerHTML = '<h4>Latest ICT Signal</h4><span class="neu">No signal in recent 200 bars</span>';
+  }
+
+  // ── Sweeps card ────────────────────────────────────────────────────────────
+  const cSweep = document.getElementById('card-sweeps');
+  const sweeps = (ict.recent_sweeps || []).slice(-4);
+  cSweep.innerHTML = '<h4>Recent Sweeps</h4>' + (sweeps.length
+    ? sweeps.map(s => `<span class="${s.type==='BSL'?'bear':'bull'}">${s.type}</span> @ ${fmt(s.t)} (${s.level})`).join('<br>')
+    : '<span class="neu">none</span>');
+
+  // ── MSS card ───────────────────────────────────────────────────────────────
+  const cMss = document.getElementById('card-mss');
+  const mssList = (ict.recent_mss || []).slice(-4);
+  cMss.innerHTML = '<h4>Recent MSS</h4>' + (mssList.length
+    ? mssList.map(m => `<span class="${m.type==='bullish'?'bull':'bear'}">${m.type==='bullish'?'▲':'▼'} MSS</span> @ ${fmt(m.t)}`).join('<br>')
+    : '<span class="neu">none</span>');
+
+  // ── FVG card ───────────────────────────────────────────────────────────────
+  const cFvg = document.getElementById('card-fvg');
+  const fvgs = (ict.recent_fvgs || []).slice(-4);
+  cFvg.innerHTML = '<h4>Recent FVGs</h4>' + (fvgs.length
+    ? fvgs.map(f => `<span class="${f.type==='bullish'?'bull':'bear'}">${f.type==='bullish'?'▲':'▼'}</span> ${f.zone_lo}–${f.zone_hi} @ ${fmt(f.t)}`).join('<br>')
+    : '<span class="neu">none</span>');
+
+  // ── Pivot levels card ──────────────────────────────────────────────────────
+  const cPivot = document.getElementById('card-pivot');
+  cPivot.innerHTML = `<h4>Pivot Levels</h4>
+    <span class="bear">Last PH:</span> ${ict.last_pivot_high ?? '—'}<br>
+    <span class="bull">Last PL:</span> ${ict.last_pivot_low  ?? '—'}`;
+}
+
+async function refresh() {
+  await Promise.all([load(), loadIct()]);
+}
+
+document.getElementById('refresh').onclick = refresh;
 window.addEventListener('resize', () => chart.applyOptions({ width: el.clientWidth, height: el.clientHeight }));
-load();
-setInterval(load, 60000);
+refresh();
+setInterval(refresh, 60000);
 </script>
 </body>
 </html>
