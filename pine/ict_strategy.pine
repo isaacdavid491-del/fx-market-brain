@@ -1,53 +1,35 @@
 //@version=5
-strategy(
-    title                   = "ICT Live Analysis Engine",
-    shorttitle              = "ICT Strategy",
-    overlay                 = true,
-    max_boxes_count         = 500,
-    max_lines_count         = 500,
-    max_labels_count        = 500,
-    initial_capital         = 10000,
-    currency                = currency.USD,
-    default_qty_type        = strategy.percent_of_equity,
-    default_qty_value       = 2,
-    commission_type         = strategy.commission.percent,
-    commission_value        = 0.005,
-    slippage                = 2,
-    pyramiding              = 0,
-    calc_on_every_tick      = false,
-    process_orders_on_close = false
-)
+strategy("ICT Live Analysis Engine", shorttitle="ICT Strategy", overlay=true,
+     max_boxes_count=500, max_lines_count=500, max_labels_count=500,
+     initial_capital=10000, default_qty_type=strategy.percent_of_equity,
+     default_qty_value=2, commission_type=strategy.commission.percent,
+     commission_value=0.005, slippage=2, pyramiding=0)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // INPUTS
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Kill Zones
-grp_kz      = "Kill Zones"
-london_kz   = input.session("0200-0500", "London Kill Zone",   group=grp_kz)
-ny_am_kz    = input.session("0700-1100", "NY AM Kill Zone",    group=grp_kz)
-ny_pm_kz    = input.session("1330-1600", "NY PM Kill Zone",    group=grp_kz)
+london_kz   = input.session("0200-0500", "London Kill Zone",  group="Kill Zones")
+ny_am_kz    = input.session("0700-1100", "NY AM Kill Zone",   group="Kill Zones")
+ny_pm_kz    = input.session("1330-1600", "NY PM Kill Zone",   group="Kill Zones")
 
 // Structure
-grp_struct  = "Structure"
-swing_len   = input.int(5, "Swing Length", minval=2, maxval=20, group=grp_struct)
+swing_len   = input.int(5, "Swing Length", minval=2, maxval=20, group="Structure")
 
 // Trade Management
-grp_trade   = "Trade Management"
-rr          = input.float(2.0,  "Risk : Reward",           minval=1.0, step=0.5, group=grp_trade)
-use_limit   = input.bool(true,  "Limit Entry at FVG CE",                         group=grp_trade,
-              tooltip="ON = wait for price to retrace into the FVG midpoint.\nOFF = market order on signal bar close.")
-trade_long  = input.bool(true,  "Enable Long Trades",                            group=grp_trade)
-trade_short = input.bool(true,  "Enable Short Trades",                           group=grp_trade)
+rr          = input.float(2.0, "Risk : Reward",        minval=1.0, step=0.5, group="Trade Management")
+use_limit   = input.bool(true, "Limit Entry @ FVG CE",                       group="Trade Management",
+              tooltip="ON = wait for price to retrace to FVG midpoint.\nOFF = market order on signal bar.")
+trade_long  = input.bool(true, "Enable Long Trades",                         group="Trade Management")
+trade_short = input.bool(true, "Enable Short Trades",                        group="Trade Management")
 
 // Display
-grp_disp    = "Display"
-show_kz     = input.bool(true, "Kill Zone Backgrounds",   group=grp_disp)
-show_sweeps = input.bool(true, "Liquidity Sweep Labels",  group=grp_disp)
-show_mss    = input.bool(true, "MSS Labels",              group=grp_disp)
-show_fvg    = input.bool(true, "FVG Boxes",               group=grp_disp)
-show_sig    = input.bool(true, "Signal Labels",           group=grp_disp)
-show_pos    = input.bool(true, "Open Position Lines",     group=grp_disp)
+show_kz     = input.bool(true, "Kill Zone Backgrounds",  group="Display")
+show_sweeps = input.bool(true, "Liquidity Sweep Labels", group="Display")
+show_mss    = input.bool(true, "MSS Labels",             group="Display")
+show_fvg    = input.bool(true, "FVG Boxes",              group="Display")
+show_sig    = input.bool(true, "Signal Labels",          group="Display")
 
 // ─────────────────────────────────────────────────────────────────────────────
 // KILL ZONES
@@ -78,8 +60,8 @@ if not na(pl)
 // ─────────────────────────────────────────────────────────────────────────────
 // LIQUIDITY SWEEPS
 // ─────────────────────────────────────────────────────────────────────────────
-bsl_sweep = not na(last_ph) and high > last_ph and close < last_ph   // Buy-Side Liq. swept
-ssl_sweep = not na(last_pl) and low  < last_pl and close > last_pl   // Sell-Side Liq. swept
+bsl_sweep = not na(last_ph) and high > last_ph and close < last_ph
+ssl_sweep = not na(last_pl) and low  < last_pl and close > last_pl
 
 if bsl_sweep and show_sweeps
     label.new(bar_index, high, "BSL Swept ⚡",
@@ -92,34 +74,28 @@ if ssl_sweep and show_sweeps
       textcolor=color.white, size=size.small)
 
 // ─────────────────────────────────────────────────────────────────────────────
-// FAIR VALUE GAPS  (FVG)
+// FAIR VALUE GAPS
+// Bullish FVG (SIBI): low[0] > high[2]  → zone from high[2] to low[0]
+// Bearish FVG (BISI): high[0] < low[2]  → zone from high[0] to low[2]
 // ─────────────────────────────────────────────────────────────────────────────
-// Bullish FVG (SIBI): gap up  — low[0] > high[2]
-//   lower boundary = high[2],  upper boundary = low[0]
 bull_fvg_lo = high[2]
 bull_fvg_hi = low[0]
 bull_fvg    = bull_fvg_hi > bull_fvg_lo
 
-// Bearish FVG (BISI): gap down — high[0] < low[2]
-//   lower boundary = high[0],  upper boundary = low[2]
 bear_fvg_lo = high[0]
 bear_fvg_hi = low[2]
 bear_fvg    = bear_fvg_lo < bear_fvg_hi
 
 if bull_fvg and show_fvg
     box.new(bar_index[2], bull_fvg_hi, bar_index + 20, bull_fvg_lo,
-      bgcolor      = color.new(color.green, 82),
-      border_color = color.new(color.green, 50),
-      border_width = 1)
+      bgcolor=color.new(color.green, 82), border_color=color.new(color.green, 50), border_width=1)
 
 if bear_fvg and show_fvg
     box.new(bar_index[2], bear_fvg_hi, bar_index + 20, bear_fvg_lo,
-      bgcolor      = color.new(color.red, 82),
-      border_color = color.new(color.red, 50),
-      border_width = 1)
+      bgcolor=color.new(color.red, 82), border_color=color.new(color.red, 50), border_width=1)
 
 // ─────────────────────────────────────────────────────────────────────────────
-// MARKET STRUCTURE SHIFTS  (MSS)
+// MARKET STRUCTURE SHIFTS
 // ─────────────────────────────────────────────────────────────────────────────
 bull_mss = ssl_sweep[1] and not na(last_ph) and close > last_ph
 bear_mss = bsl_sweep[1] and not na(last_pl) and close < last_pl
@@ -144,17 +120,16 @@ short_sig = bear_mss and bear_fvg and in_kz and trade_short
 // STRATEGY EXECUTION
 // ─────────────────────────────────────────────────────────────────────────────
 if long_sig
-    ep = (bull_fvg_lo + bull_fvg_hi) / 2           // FVG midpoint (CE)
-    sl = bull_fvg_lo - (bull_fvg_hi - bull_fvg_lo) // one zone-width below FVG
+    ep = (bull_fvg_lo + bull_fvg_hi) / 2
+    sl = bull_fvg_lo - (bull_fvg_hi - bull_fvg_lo)
     tp = ep + (ep - sl) * rr
 
-    strategy.cancel("Short")  // cancel any pending opposite limit order
+    strategy.cancel("Short")
     if use_limit
-        strategy.entry("Long", strategy.long, limit=ep, comment="ICT-L")
+        strategy.entry("Long", strategy.long, limit=ep)
     else
-        strategy.entry("Long", strategy.long, comment="ICT-L")
-    strategy.exit("Long Exit", from_entry="Long", stop=sl, limit=tp,
-      comment_loss="SL hit", comment_profit="TP hit")
+        strategy.entry("Long", strategy.long)
+    strategy.exit("Long Exit", from_entry="Long", stop=sl, limit=tp)
 
     if show_sig
         label.new(bar_index, sl - syminfo.mintick * 10,
@@ -165,17 +140,16 @@ if long_sig
           textcolor=color.white, size=size.normal)
 
 if short_sig
-    ep = (bear_fvg_lo + bear_fvg_hi) / 2           // FVG midpoint (CE)
-    sl = bear_fvg_hi + (bear_fvg_hi - bear_fvg_lo) // one zone-width above FVG
+    ep = (bear_fvg_lo + bear_fvg_hi) / 2
+    sl = bear_fvg_hi + (bear_fvg_hi - bear_fvg_lo)
     tp = ep - (sl - ep) * rr
 
-    strategy.cancel("Long")   // cancel any pending opposite limit order
+    strategy.cancel("Long")
     if use_limit
-        strategy.entry("Short", strategy.short, limit=ep, comment="ICT-S")
+        strategy.entry("Short", strategy.short, limit=ep)
     else
-        strategy.entry("Short", strategy.short, comment="ICT-S")
-    strategy.exit("Short Exit", from_entry="Short", stop=sl, limit=tp,
-      comment_loss="SL hit", comment_profit="TP hit")
+        strategy.entry("Short", strategy.short)
+    strategy.exit("Short Exit", from_entry="Short", stop=sl, limit=tp)
 
     if show_sig
         label.new(bar_index, sl + syminfo.mintick * 10,
@@ -186,90 +160,63 @@ if short_sig
           textcolor=color.white, size=size.normal)
 
 // ─────────────────────────────────────────────────────────────────────────────
-// OPEN POSITION LINES  (entry / SL / TP)
+// OPEN POSITION ENTRY LINE
 // ─────────────────────────────────────────────────────────────────────────────
 var line ln_entry = na
-var line ln_sl    = na
-var line ln_tp    = na
-
-if show_pos and strategy.position_size != 0
-    // Re-draw on every bar while in a position so lines extend to the right
+if strategy.position_size != 0
     line.delete(ln_entry)
-    line.delete(ln_sl)
-    line.delete(ln_tp)
-
-    ep_open = strategy.position_avg_price
-
-    // Retrieve the active exit levels set by strategy.exit()
-    // TradingView exposes these via strategy.opentrades.*
-    sl_open = strategy.opentrades.entry_price(0) != 0
-              ? (strategy.position_size > 0
-                 ? strategy.opentrades.entry_price(0) - math.abs(strategy.opentrades.entry_price(0) - ep_open) * 2
-                 : strategy.opentrades.entry_price(0) + math.abs(strategy.opentrades.entry_price(0) - ep_open) * 2)
-              : na  // fallback — actual levels come from strategy.exit()
-
-    // Draw entry line
-    ln_entry := line.new(bar_index - 1, ep_open, bar_index, ep_open,
+    ln_entry := line.new(bar_index - 1, strategy.position_avg_price,
+      bar_index, strategy.position_avg_price,
       color=color.gray, width=1, style=line.style_dashed, extend=line.extend.right)
-
-if show_pos and strategy.position_size == 0
+if strategy.position_size == 0
     line.delete(ln_entry)
-    line.delete(ln_sl)
-    line.delete(ln_tp)
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PERFORMANCE TABLE  (bottom-right corner)
+// PERFORMANCE TABLE
 // ─────────────────────────────────────────────────────────────────────────────
 var table perf_tbl = table.new(position.bottom_right, 2, 6,
-  bgcolor=color.new(color.white, 10), border_color=color.new(color.gray, 70), border_width=1,
+  bgcolor=color.new(color.white, 10),
+  border_color=color.new(color.gray, 70), border_width=1,
   frame_color=color.new(color.gray, 50), frame_width=1)
 
 if barstate.islast
     win_rate = strategy.closedtrades > 0
                ? (strategy.wintrades / strategy.closedtrades) * 100
                : 0.0
-    pf       = strategy.grossloss != 0
-               ? math.abs(strategy.grossprofit / strategy.grossloss)
-               : 0.0
-
+    pf = strategy.grossloss != 0
+         ? math.abs(strategy.grossprofit / strategy.grossloss)
+         : 0.0
     hdr = color.new(color.navy, 20)
-    table.cell(perf_tbl, 0, 0, "Metric",          text_color=color.white, bgcolor=hdr, text_size=size.small)
-    table.cell(perf_tbl, 1, 0, "Value",           text_color=color.white, bgcolor=hdr, text_size=size.small)
 
-    table.cell(perf_tbl, 0, 1, "Net P&L",         text_color=color.gray,  text_size=size.small)
+    table.cell(perf_tbl, 0, 0, "Metric",       text_color=color.white, bgcolor=hdr, text_size=size.small)
+    table.cell(perf_tbl, 1, 0, "Value",         text_color=color.white, bgcolor=hdr, text_size=size.small)
+    table.cell(perf_tbl, 0, 1, "Net P&L",       text_color=color.gray, text_size=size.small)
     table.cell(perf_tbl, 1, 1,
-      str.tostring(strategy.netprofit, "#.##") + " " + syminfo.currency,
-      text_color = strategy.netprofit >= 0 ? color.new(color.green, 20) : color.new(color.red, 20),
-      text_size  = size.small)
-
-    table.cell(perf_tbl, 0, 2, "Win Rate",        text_color=color.gray,  text_size=size.small)
+      str.tostring(strategy.netprofit, "#.##"),
+      text_color=strategy.netprofit >= 0 ? color.new(color.green, 20) : color.new(color.red, 20),
+      text_size=size.small)
+    table.cell(perf_tbl, 0, 2, "Win Rate",      text_color=color.gray, text_size=size.small)
     table.cell(perf_tbl, 1, 2,
       str.tostring(win_rate, "#.#") + "%",
-      text_color = win_rate >= 50 ? color.new(color.green, 20) : color.new(color.red, 20),
-      text_size  = size.small)
-
-    table.cell(perf_tbl, 0, 3, "Profit Factor",   text_color=color.gray,  text_size=size.small)
+      text_color=win_rate >= 50 ? color.new(color.green, 20) : color.new(color.red, 20),
+      text_size=size.small)
+    table.cell(perf_tbl, 0, 3, "Prof. Factor",  text_color=color.gray, text_size=size.small)
     table.cell(perf_tbl, 1, 3,
       str.tostring(pf, "#.##"),
-      text_color = pf >= 1.5 ? color.new(color.green, 20) : color.new(color.red, 20),
-      text_size  = size.small)
-
-    table.cell(perf_tbl, 0, 4, "Trades",          text_color=color.gray,  text_size=size.small)
+      text_color=pf >= 1.5 ? color.new(color.green, 20) : color.new(color.red, 20),
+      text_size=size.small)
+    table.cell(perf_tbl, 0, 4, "Trades",        text_color=color.gray, text_size=size.small)
     table.cell(perf_tbl, 1, 4,
       str.tostring(strategy.closedtrades),
       text_color=color.gray, text_size=size.small)
-
-    table.cell(perf_tbl, 0, 5, "Max DD",          text_color=color.gray,  text_size=size.small)
+    table.cell(perf_tbl, 0, 5, "Max DD",        text_color=color.gray, text_size=size.small)
     table.cell(perf_tbl, 1, 5,
-      str.tostring(strategy.max_drawdown, "#.##") + " " + syminfo.currency,
+      str.tostring(strategy.max_drawdown, "#.##"),
       text_color=color.new(color.red, 20), text_size=size.small)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ALERTS
 // ─────────────────────────────────────────────────────────────────────────────
-alertcondition(long_sig,  "ICT Long Signal",
-  "🟢 ICT LONG — SSL Swept + Bullish MSS + FVG in Kill Zone")
-alertcondition(short_sig, "ICT Short Signal",
-  "🔴 ICT SHORT — BSL Swept + Bearish MSS + FVG in Kill Zone")
-alertcondition(long_sig or short_sig, "ICT Any Signal",
-  "⚡ ICT Signal fired — check chart")
+alertcondition(long_sig,              "ICT Long Signal",  "🟢 ICT LONG — SSL Swept + Bullish MSS + FVG in Kill Zone")
+alertcondition(short_sig,             "ICT Short Signal", "🔴 ICT SHORT — BSL Swept + Bearish MSS + FVG in Kill Zone")
+alertcondition(long_sig or short_sig, "ICT Any Signal",   "⚡ ICT Signal fired — check chart")
