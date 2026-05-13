@@ -1,222 +1,173 @@
 //@version=5
-strategy("ICT Live Analysis Engine", shorttitle="ICT Strategy", overlay=true,
-     max_boxes_count=500, max_lines_count=500, max_labels_count=500,
-     initial_capital=10000, default_qty_type=strategy.percent_of_equity,
-     default_qty_value=2, commission_type=strategy.commission.percent,
-     commission_value=0.005, slippage=2, pyramiding=0)
+strategy("ICT Live Analysis Engine", overlay=true, initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=2, commission_type=strategy.commission.percent, commission_value=0.005, slippage=2, pyramiding=0, max_boxes_count=500, max_labels_count=500, max_lines_count=500)
 
-// ─────────────────────────────────────────────────────────────────────────────
-// INPUTS
-// ─────────────────────────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════
+//  INPUTS
+// ══════════════════════════════════════════════════════════
 
 // Kill Zones
-london_kz   = input.session("0200-0500", "London Kill Zone",  group="Kill Zones")
-ny_am_kz    = input.session("0700-1100", "NY AM Kill Zone",   group="Kill Zones")
-ny_pm_kz    = input.session("1330-1600", "NY PM Kill Zone",   group="Kill Zones")
+i_london  = input.session("0200-0500", "London Kill Zone",  group="Kill Zones")
+i_nyam    = input.session("0700-1100", "NY AM Kill Zone",   group="Kill Zones")
+i_nypm    = input.session("1330-1600", "NY PM Kill Zone",   group="Kill Zones")
 
 // Structure
-swing_len   = input.int(5, "Swing Length", minval=2, maxval=20, group="Structure")
+i_swing   = input.int(5,   "Swing Length",    minval=2, maxval=20, group="Structure")
 
-// Trade Management
-rr          = input.float(2.0, "Risk : Reward",        minval=1.0, step=0.5, group="Trade Management")
-use_limit   = input.bool(true, "Limit Entry @ FVG CE",                       group="Trade Management",
-              tooltip="ON = wait for price to retrace to FVG midpoint.\nOFF = market order on signal bar.")
-trade_long  = input.bool(true, "Enable Long Trades",                         group="Trade Management")
-trade_short = input.bool(true, "Enable Short Trades",                        group="Trade Management")
+// Trade
+i_rr      = input.float(2.0, "Risk:Reward",   minval=1.0, step=0.5, group="Trade")
+i_limit   = input.bool(true, "Limit @ FVG CE (else market)", group="Trade")
+i_longs   = input.bool(true, "Enable Longs",  group="Trade")
+i_shorts  = input.bool(true, "Enable Shorts", group="Trade")
 
 // Display
-show_kz     = input.bool(true, "Kill Zone Backgrounds",  group="Display")
-show_sweeps = input.bool(true, "Liquidity Sweep Labels", group="Display")
-show_mss    = input.bool(true, "MSS Labels",             group="Display")
-show_fvg    = input.bool(true, "FVG Boxes",              group="Display")
-show_sig    = input.bool(true, "Signal Labels",          group="Display")
+i_showkz  = input.bool(true, "Kill Zone BG",   group="Display")
+i_showswp = input.bool(true, "Sweep Labels",   group="Display")
+i_showmss = input.bool(true, "MSS Labels",     group="Display")
+i_showfvg = input.bool(true, "FVG Boxes",      group="Display")
+i_showsig = input.bool(true, "Signal Labels",  group="Display")
 
-// ─────────────────────────────────────────────────────────────────────────────
-// KILL ZONES
-// ─────────────────────────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════
+//  KILL ZONES
+// ══════════════════════════════════════════════════════════
 in_sess(s) => not na(time(timeframe.period, s, "America/New_York"))
-in_lon  = in_sess(london_kz)
-in_nyam = in_sess(ny_am_kz)
-in_nypm = in_sess(ny_pm_kz)
+
+in_lon  = in_sess(i_london)
+in_nyam = in_sess(i_nyam)
+in_nypm = in_sess(i_nypm)
 in_kz   = in_lon or in_nyam or in_nypm
 
-bgcolor(show_kz and in_lon  ? color.new(color.blue,   92) : na, title="London KZ")
-bgcolor(show_kz and in_nyam ? color.new(color.orange, 92) : na, title="NY AM KZ")
-bgcolor(show_kz and in_nypm ? color.new(color.purple, 92) : na, title="NY PM KZ")
+bgcolor(i_showkz and in_lon  ? color.new(color.blue,   92) : na, title="London KZ")
+bgcolor(i_showkz and in_nyam ? color.new(color.orange, 92) : na, title="NY AM KZ")
+bgcolor(i_showkz and in_nypm ? color.new(color.purple, 92) : na, title="NY PM KZ")
 
-// ─────────────────────────────────────────────────────────────────────────────
-// SWING POINTS  (Liquidity Pools)
-// ─────────────────────────────────────────────────────────────────────────────
-ph = ta.pivothigh(high, swing_len, swing_len)
-pl = ta.pivotlow (low,  swing_len, swing_len)
+// ══════════════════════════════════════════════════════════
+//  SWING POINTS
+// ══════════════════════════════════════════════════════════
+ph = ta.pivothigh(high, i_swing, i_swing)
+pl = ta.pivotlow(low,  i_swing, i_swing)
 
 var float last_ph = na
 var float last_pl = na
+
 if not na(ph)
     last_ph := ph
 if not na(pl)
     last_pl := pl
 
-// ─────────────────────────────────────────────────────────────────────────────
-// LIQUIDITY SWEEPS
-// ─────────────────────────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════
+//  LIQUIDITY SWEEPS
+// ══════════════════════════════════════════════════════════
 bsl_sweep = not na(last_ph) and high > last_ph and close < last_ph
 ssl_sweep = not na(last_pl) and low  < last_pl and close > last_pl
 
-if bsl_sweep and show_sweeps
-    label.new(bar_index, high, "BSL Swept ⚡",
-      color=color.new(color.red, 10), style=label.style_label_down,
-      textcolor=color.white, size=size.small)
+if bsl_sweep and i_showswp
+    label.new(bar_index, high, "BSL ⚡", color=color.new(color.red, 10), style=label.style_label_down, textcolor=color.white, size=size.small)
 
-if ssl_sweep and show_sweeps
-    label.new(bar_index, low, "SSL Swept ⚡",
-      color=color.new(color.green, 10), style=label.style_label_up,
-      textcolor=color.white, size=size.small)
+if ssl_sweep and i_showswp
+    label.new(bar_index, low, "SSL ⚡", color=color.new(color.green, 10), style=label.style_label_up, textcolor=color.white, size=size.small)
 
-// ─────────────────────────────────────────────────────────────────────────────
-// FAIR VALUE GAPS
-// Bullish FVG (SIBI): low[0] > high[2]  → zone from high[2] to low[0]
-// Bearish FVG (BISI): high[0] < low[2]  → zone from high[0] to low[2]
-// ─────────────────────────────────────────────────────────────────────────────
-bull_fvg_lo = high[2]
-bull_fvg_hi = low[0]
-bull_fvg    = bull_fvg_hi > bull_fvg_lo
+// ══════════════════════════════════════════════════════════
+//  FAIR VALUE GAPS
+// ══════════════════════════════════════════════════════════
+// Bullish FVG: gap up  → low[0] > high[2]
+bfvg_lo = high[2]
+bfvg_hi = low[0]
+bull_fvg = bfvg_hi > bfvg_lo
 
-bear_fvg_lo = high[0]
-bear_fvg_hi = low[2]
-bear_fvg    = bear_fvg_lo < bear_fvg_hi
+// Bearish FVG: gap down → high[0] < low[2]
+rfvg_lo = high[0]
+rfvg_hi = low[2]
+bear_fvg = rfvg_lo < rfvg_hi
 
-if bull_fvg and show_fvg
-    box.new(bar_index[2], bull_fvg_hi, bar_index + 20, bull_fvg_lo,
-      bgcolor=color.new(color.green, 82), border_color=color.new(color.green, 50), border_width=1)
+if bull_fvg and i_showfvg
+    box.new(bar_index[2], bfvg_hi, bar_index + 20, bfvg_lo, bgcolor=color.new(color.green, 82), border_color=color.new(color.green, 50))
 
-if bear_fvg and show_fvg
-    box.new(bar_index[2], bear_fvg_hi, bar_index + 20, bear_fvg_lo,
-      bgcolor=color.new(color.red, 82), border_color=color.new(color.red, 50), border_width=1)
+if bear_fvg and i_showfvg
+    box.new(bar_index[2], rfvg_hi, bar_index + 20, rfvg_lo, bgcolor=color.new(color.red, 82), border_color=color.new(color.red, 50))
 
-// ─────────────────────────────────────────────────────────────────────────────
-// MARKET STRUCTURE SHIFTS
-// ─────────────────────────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════
+//  MARKET STRUCTURE SHIFTS
+// ══════════════════════════════════════════════════════════
 bull_mss = ssl_sweep[1] and not na(last_ph) and close > last_ph
 bear_mss = bsl_sweep[1] and not na(last_pl) and close < last_pl
 
-if bull_mss and show_mss
-    label.new(bar_index, low, "▲ Bullish MSS",
-      color=color.green, style=label.style_label_up,
-      textcolor=color.white, size=size.small)
+if bull_mss and i_showmss
+    label.new(bar_index, low, "▲ MSS", color=color.green, style=label.style_label_up, textcolor=color.white, size=size.small)
 
-if bear_mss and show_mss
-    label.new(bar_index, high, "▼ Bearish MSS",
-      color=color.red, style=label.style_label_down,
-      textcolor=color.white, size=size.small)
+if bear_mss and i_showmss
+    label.new(bar_index, high, "▼ MSS", color=color.red, style=label.style_label_down, textcolor=color.white, size=size.small)
 
-// ─────────────────────────────────────────────────────────────────────────────
-// TRADE SIGNALS
-// ─────────────────────────────────────────────────────────────────────────────
-long_sig  = bull_mss and bull_fvg and in_kz and trade_long
-short_sig = bear_mss and bear_fvg and in_kz and trade_short
+// ══════════════════════════════════════════════════════════
+//  SIGNALS
+// ══════════════════════════════════════════════════════════
+long_sig  = bull_mss and bull_fvg and in_kz and i_longs
+short_sig = bear_mss and bear_fvg and in_kz and i_shorts
 
-// ─────────────────────────────────────────────────────────────────────────────
-// STRATEGY EXECUTION
-// ─────────────────────────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════
+//  LONG ENTRY
+// ══════════════════════════════════════════════════════════
 if long_sig
-    ep = (bull_fvg_lo + bull_fvg_hi) / 2
-    sl = bull_fvg_lo - (bull_fvg_hi - bull_fvg_lo)
-    tp = ep + (ep - sl) * rr
-
+    ep = (bfvg_lo + bfvg_hi) / 2
+    sl = bfvg_lo - (bfvg_hi - bfvg_lo)
+    tp = ep + (ep - sl) * i_rr
     strategy.cancel("Short")
-    if use_limit
+    if i_limit
         strategy.entry("Long", strategy.long, limit=ep)
     else
         strategy.entry("Long", strategy.long)
     strategy.exit("Long Exit", from_entry="Long", stop=sl, limit=tp)
+    if i_showsig
+        label.new(bar_index, sl - syminfo.mintick * 10, "🟢 LONG\nEP:" + str.tostring(ep, "#.####") + "\nSL:" + str.tostring(sl, "#.####") + "\nTP:" + str.tostring(tp, "#.####"), color=color.green, style=label.style_label_up, textcolor=color.white, size=size.small)
 
-    if show_sig
-        label.new(bar_index, sl - syminfo.mintick * 10,
-          "🟢 LONG\nEntry : " + str.tostring(ep, "#.#####") +
-          "\nSL    : "        + str.tostring(sl, "#.#####") +
-          "\nTP    : "        + str.tostring(tp, "#.#####"),
-          color=color.new(color.green, 0), style=label.style_label_up,
-          textcolor=color.white, size=size.normal)
-
+// ══════════════════════════════════════════════════════════
+//  SHORT ENTRY
+// ══════════════════════════════════════════════════════════
 if short_sig
-    ep = (bear_fvg_lo + bear_fvg_hi) / 2
-    sl = bear_fvg_hi + (bear_fvg_hi - bear_fvg_lo)
-    tp = ep - (sl - ep) * rr
-
+    ep = (rfvg_lo + rfvg_hi) / 2
+    sl = rfvg_hi + (rfvg_hi - rfvg_lo)
+    tp = ep - (sl - ep) * i_rr
     strategy.cancel("Long")
-    if use_limit
+    if i_limit
         strategy.entry("Short", strategy.short, limit=ep)
     else
         strategy.entry("Short", strategy.short)
     strategy.exit("Short Exit", from_entry="Short", stop=sl, limit=tp)
+    if i_showsig
+        label.new(bar_index, sl + syminfo.mintick * 10, "🔴 SHORT\nEP:" + str.tostring(ep, "#.####") + "\nSL:" + str.tostring(sl, "#.####") + "\nTP:" + str.tostring(tp, "#.####"), color=color.red, style=label.style_label_down, textcolor=color.white, size=size.small)
 
-    if show_sig
-        label.new(bar_index, sl + syminfo.mintick * 10,
-          "🔴 SHORT\nEntry : " + str.tostring(ep, "#.#####") +
-          "\nSL    : "         + str.tostring(sl, "#.#####") +
-          "\nTP    : "         + str.tostring(tp, "#.#####"),
-          color=color.new(color.red, 0), style=label.style_label_down,
-          textcolor=color.white, size=size.normal)
-
-// ─────────────────────────────────────────────────────────────────────────────
-// OPEN POSITION ENTRY LINE
-// ─────────────────────────────────────────────────────────────────────────────
-var line ln_entry = na
+// ══════════════════════════════════════════════════════════
+//  POSITION LINE
+// ══════════════════════════════════════════════════════════
+var line pos_line = na
 if strategy.position_size != 0
-    line.delete(ln_entry)
-    ln_entry := line.new(bar_index - 1, strategy.position_avg_price,
-      bar_index, strategy.position_avg_price,
-      color=color.gray, width=1, style=line.style_dashed, extend=line.extend.right)
+    line.delete(pos_line)
+    pos_line := line.new(bar_index - 1, strategy.position_avg_price, bar_index, strategy.position_avg_price, color=color.gray, style=line.style_dashed, extend=line.extend.right)
 if strategy.position_size == 0
-    line.delete(ln_entry)
+    line.delete(pos_line)
 
-// ─────────────────────────────────────────────────────────────────────────────
-// PERFORMANCE TABLE
-// ─────────────────────────────────────────────────────────────────────────────
-var table perf_tbl = table.new(position.bottom_right, 2, 6,
-  bgcolor=color.new(color.white, 10),
-  border_color=color.new(color.gray, 70), border_width=1,
-  frame_color=color.new(color.gray, 50), frame_width=1)
+// ══════════════════════════════════════════════════════════
+//  STATS TABLE
+// ══════════════════════════════════════════════════════════
+var table t = table.new(position.bottom_right, 2, 5, bgcolor=color.new(color.black, 80), border_color=color.new(color.gray, 60), border_width=1)
 
 if barstate.islast
-    win_rate = strategy.closedtrades > 0
-               ? (strategy.wintrades / strategy.closedtrades) * 100
-               : 0.0
-    pf = strategy.grossloss != 0
-         ? math.abs(strategy.grossprofit / strategy.grossloss)
-         : 0.0
-    hdr = color.new(color.navy, 20)
+    wr = strategy.closedtrades > 0 ? strategy.wintrades / strategy.closedtrades * 100 : 0.0
+    pf = strategy.grossloss != 0   ? math.abs(strategy.grossprofit / strategy.grossloss) : 0.0
 
-    table.cell(perf_tbl, 0, 0, "Metric",       text_color=color.white, bgcolor=hdr, text_size=size.small)
-    table.cell(perf_tbl, 1, 0, "Value",         text_color=color.white, bgcolor=hdr, text_size=size.small)
-    table.cell(perf_tbl, 0, 1, "Net P&L",       text_color=color.gray, text_size=size.small)
-    table.cell(perf_tbl, 1, 1,
-      str.tostring(strategy.netprofit, "#.##"),
-      text_color=strategy.netprofit >= 0 ? color.new(color.green, 20) : color.new(color.red, 20),
-      text_size=size.small)
-    table.cell(perf_tbl, 0, 2, "Win Rate",      text_color=color.gray, text_size=size.small)
-    table.cell(perf_tbl, 1, 2,
-      str.tostring(win_rate, "#.#") + "%",
-      text_color=win_rate >= 50 ? color.new(color.green, 20) : color.new(color.red, 20),
-      text_size=size.small)
-    table.cell(perf_tbl, 0, 3, "Prof. Factor",  text_color=color.gray, text_size=size.small)
-    table.cell(perf_tbl, 1, 3,
-      str.tostring(pf, "#.##"),
-      text_color=pf >= 1.5 ? color.new(color.green, 20) : color.new(color.red, 20),
-      text_size=size.small)
-    table.cell(perf_tbl, 0, 4, "Trades",        text_color=color.gray, text_size=size.small)
-    table.cell(perf_tbl, 1, 4,
-      str.tostring(strategy.closedtrades),
-      text_color=color.gray, text_size=size.small)
-    table.cell(perf_tbl, 0, 5, "Max DD",        text_color=color.gray, text_size=size.small)
-    table.cell(perf_tbl, 1, 5,
-      str.tostring(strategy.max_drawdown, "#.##"),
-      text_color=color.new(color.red, 20), text_size=size.small)
+    table.cell(t, 0, 0, "Net P&L",  text_color=color.gray,  text_size=size.small)
+    table.cell(t, 1, 0, str.tostring(strategy.netprofit, "#.##"), text_color=strategy.netprofit >= 0 ? color.lime : color.red, text_size=size.small)
+    table.cell(t, 0, 1, "Win Rate", text_color=color.gray,  text_size=size.small)
+    table.cell(t, 1, 1, str.tostring(wr, "#.#") + "%",      text_color=wr >= 50 ? color.lime : color.red, text_size=size.small)
+    table.cell(t, 0, 2, "Pft Factor",text_color=color.gray, text_size=size.small)
+    table.cell(t, 1, 2, str.tostring(pf, "#.##"),           text_color=pf >= 1.5 ? color.lime : color.red, text_size=size.small)
+    table.cell(t, 0, 3, "Trades",   text_color=color.gray,  text_size=size.small)
+    table.cell(t, 1, 3, str.tostring(strategy.closedtrades),text_color=color.gray, text_size=size.small)
+    table.cell(t, 0, 4, "Max DD",   text_color=color.gray,  text_size=size.small)
+    table.cell(t, 1, 4, str.tostring(strategy.max_drawdown, "#.##"), text_color=color.red, text_size=size.small)
 
-// ─────────────────────────────────────────────────────────────────────────────
-// ALERTS
-// ─────────────────────────────────────────────────────────────────────────────
-alertcondition(long_sig,              "ICT Long Signal",  "🟢 ICT LONG — SSL Swept + Bullish MSS + FVG in Kill Zone")
-alertcondition(short_sig,             "ICT Short Signal", "🔴 ICT SHORT — BSL Swept + Bearish MSS + FVG in Kill Zone")
-alertcondition(long_sig or short_sig, "ICT Any Signal",   "⚡ ICT Signal fired — check chart")
+// ══════════════════════════════════════════════════════════
+//  ALERTS
+// ══════════════════════════════════════════════════════════
+alertcondition(long_sig,              "ICT Long",  "🟢 ICT LONG — SSL Swept + Bull MSS + FVG in KZ")
+alertcondition(short_sig,             "ICT Short", "🔴 ICT SHORT — BSL Swept + Bear MSS + FVG in KZ")
+alertcondition(long_sig or short_sig, "ICT Signal","⚡ ICT Signal — check chart")
