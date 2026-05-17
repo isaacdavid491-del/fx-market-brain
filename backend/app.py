@@ -144,8 +144,12 @@ _INDEX_HTML = """<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>FX Market Brain</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
+  <meta name="mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+  <meta name="theme-color" content="#0d1117"/>
+  <title>FX Brain</title>
   <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -154,149 +158,213 @@ _INDEX_HTML = """<!doctype html>
       --bd:  #30363d; --txt: #e6edf3; --dim: #8b949e;
       --grn: #3fb950; --red: #f85149; --blu: #58a6ff;
       --ylw: #d29922; --pur: #bc8cff;
+      --safe-bottom: env(safe-area-inset-bottom, 0px);
     }
     html, body {
       height: 100%; background: var(--bg); color: var(--txt);
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
-      font-size: 13px; overflow: hidden;
+      font-size: 13px; overflow: hidden; -webkit-tap-highlight-color: transparent;
     }
-    #app { display: flex; flex-direction: column; height: 100vh; }
+    #app { display: flex; flex-direction: column; height: 100dvh; }
 
-    /* Header */
+    /* ── Header ── */
     #hdr {
-      display: flex; align-items: center; gap: 10px;
-      padding: 8px 14px; background: var(--bg2);
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 12px; background: var(--bg2);
       border-bottom: 1px solid var(--bd); flex-shrink: 0; flex-wrap: wrap;
     }
-    #logo { font-weight: 900; font-size: 14px; color: var(--blu); letter-spacing: -.4px; }
+    #logo { font-weight: 900; font-size: 14px; color: var(--blu); letter-spacing: -.4px; flex-shrink: 0; }
     .sep  { width: 1px; height: 18px; background: var(--bd); flex-shrink: 0; }
 
     #sym {
       background: var(--bg3); border: 1px solid var(--bd); color: var(--txt);
-      padding: 4px 9px; border-radius: 6px; font-size: 12px;
+      padding: 6px 10px; border-radius: 8px; font-size: 13px;
       width: 100px; font-family: monospace; text-transform: uppercase;
+      -webkit-appearance: none;
     }
     #sym:focus { outline: none; border-color: var(--blu); }
 
-    .tfbtns { display: flex; gap: 3px; }
+    .tfbtns { display: flex; gap: 3px; overflow-x: auto; flex-shrink: 0; }
     .tfb {
       background: var(--bg3); border: 1px solid var(--bd); color: var(--dim);
-      padding: 4px 9px; border-radius: 5px; cursor: pointer;
-      font-size: 11px; font-weight: 700; transition: all .1s;
+      padding: 6px 10px; border-radius: 6px; cursor: pointer;
+      font-size: 11px; font-weight: 700; white-space: nowrap; flex-shrink: 0;
+      min-width: 36px; text-align: center;
+      -webkit-appearance: none;
     }
-    .tfb:hover { border-color: var(--blu); color: var(--blu); }
-    .tfb.on   { background: var(--blu); border-color: var(--blu); color: #fff; }
+    .tfb.on { background: var(--blu); border-color: var(--blu); color: #fff; }
 
     .btn {
       background: var(--bg3); border: 1px solid var(--bd); color: var(--txt);
-      padding: 5px 13px; border-radius: 6px; cursor: pointer;
-      font-size: 12px; font-weight: 600; transition: all .1s; white-space: nowrap;
+      padding: 7px 14px; border-radius: 8px; cursor: pointer;
+      font-size: 13px; font-weight: 600; white-space: nowrap; flex-shrink: 0;
+      -webkit-appearance: none; min-height: 36px;
     }
-    .btn:hover   { border-color: var(--blu); }
     .btn:disabled { opacity: .4; cursor: not-allowed; }
     .btn.pri { background: var(--blu); border-color: var(--blu); color: #fff; }
-    .btn.pri:hover { background: #79b8ff; border-color: #79b8ff; }
 
-    #live { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--dim); }
+    #live { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--dim); flex-shrink: 0; }
     #dot  { width: 7px; height: 7px; border-radius: 50%; background: var(--grn);
             animation: blink 2s infinite; }
     @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.2} }
-    #upd { margin-left: auto; color: var(--dim); font-size: 11px; }
+    #upd { color: var(--dim); font-size: 11px; display: none; }
 
-    /* Price strip */
+    /* ── Price strip ── */
     #pstrip {
       display: flex; align-items: center; gap: 12px;
-      padding: 5px 14px; background: var(--bg2);
+      padding: 5px 12px; background: var(--bg2);
       border-bottom: 1px solid var(--bd); flex-shrink: 0;
       overflow-x: auto; font-family: monospace; font-size: 12px;
+      scrollbar-width: none;
     }
-    .ptf  { display: flex; gap: 5px; align-items: center; }
+    #pstrip::-webkit-scrollbar { display: none; }
+    .ptf  { display: flex; gap: 4px; align-items: center; white-space: nowrap; }
     .ptfl { color: var(--dim); font-size: 10px; font-weight: 700; }
-    .pu   { color: var(--grn); } .pd { color: var(--red); }
+    .pu { color: var(--grn); } .pd { color: var(--red); }
 
-    /* Stats */
+    /* ── Stats bar (desktop only) ── */
     #sbar {
-      display: flex; align-items: center; gap: 16px;
-      padding: 5px 14px; background: var(--bg2);
+      display: flex; align-items: center; gap: 14px;
+      padding: 4px 12px; background: var(--bg2);
       border-bottom: 1px solid var(--bd); flex-shrink: 0; font-size: 11px;
     }
-    .si  { display: flex; gap: 4px; align-items: center; }
-    .sl  { color: var(--dim); }
-    .sv  { font-weight: 700; font-family: monospace; }
-    #snt { margin-left: auto; color: var(--dim); font-size: 11px; }
+    .si { display: flex; gap: 4px; align-items: center; }
+    .sl { color: var(--dim); } .sv { font-weight: 700; font-family: monospace; }
+    #snt { margin-left: auto; color: var(--dim); font-size: 10px; }
 
-    /* Main */
+    /* ── Desktop layout ── */
     #main { display: flex; flex: 1; overflow: hidden; min-height: 0; }
     #cpanel { flex: 1; display: flex; flex-direction: column; min-width: 0; }
     #chart  { flex: 1; min-height: 0; }
 
-    /* Right panel */
     #rpanel {
       width: 320px; min-width: 270px;
       border-left: 1px solid var(--bd);
       overflow-y: auto; display: flex; flex-direction: column;
     }
-    .sec    { border-bottom: 1px solid var(--bd); padding: 11px 12px; }
+
+    /* ── Mobile bottom tab bar ── */
+    #tabnav { display: none; }
+
+    /* ── Panel sections ── */
+    .sec    { border-bottom: 1px solid var(--bd); padding: 12px; }
     .stitle { font-size: 10px; font-weight: 700; letter-spacing: 1px;
               text-transform: uppercase; color: var(--dim); margin-bottom: 8px; }
 
-    /* Bias */
-    #bcard { padding: 14px 12px; border-bottom: 1px solid var(--bd); text-align: center; }
-    #blbl  { font-size: 20px; font-weight: 900; letter-spacing: 3px; margin-bottom: 6px; }
+    /* Bias card */
+    #bcard { padding: 16px 12px; border-bottom: 1px solid var(--bd); text-align: center; }
+    #blbl  { font-size: 24px; font-weight: 900; letter-spacing: 3px; margin-bottom: 6px; }
     .gb { color: var(--grn); } .gr { color: var(--red); } .gn { color: var(--dim); }
-    #cbw { background: var(--bg3); border-radius: 3px; height: 4px; margin: 6px 0; overflow: hidden; }
+    #cbw { background: var(--bg3); border-radius: 3px; height: 5px; margin: 8px 0; overflow: hidden; }
     #cb  { height: 100%; border-radius: 3px; transition: width .4s, background .4s; width: 0; }
-    #cnum { color: var(--dim); font-size: 11px; }
-    #bsum { text-align: left; margin-top: 8px; color: var(--dim); font-size: 12px; line-height: 1.55; }
+    #cnum { color: var(--dim); font-size: 12px; }
+    #bsum { text-align: left; margin-top: 10px; color: var(--dim); font-size: 13px; line-height: 1.6; }
 
     /* Observations */
-    .oi { padding: 5px 0; border-bottom: 1px solid rgba(48,54,61,.4);
-          font-size: 12px; line-height: 1.55; }
+    .oi { padding: 7px 0; border-bottom: 1px solid rgba(48,54,61,.4); font-size: 13px; line-height: 1.55; }
     .oi::before { content: "→ "; color: var(--blu); font-weight: 700; }
 
-    /* Prediction card */
-    #pcard { background: var(--bg3); border-radius: 7px; padding: 11px; }
-    .pdir  { font-size: 15px; font-weight: 900; letter-spacing: 2px; margin-bottom: 6px; }
-    .ptgt  { font-family: monospace; font-size: 12px; color: var(--dim); margin-bottom: 6px; }
-    .prsn  { font-size: 12px; line-height: 1.6; margin-bottom: 6px; }
-    .pwtch { font-size: 11px; color: var(--pur); line-height: 1.5; }
+    /* Prediction */
+    #pcard { background: var(--bg3); border-radius: 8px; padding: 12px; }
+    .pdir  { font-size: 18px; font-weight: 900; letter-spacing: 2px; margin-bottom: 6px; }
+    .ptgt  { font-family: monospace; font-size: 13px; color: var(--dim); margin-bottom: 8px; }
+    .prsn  { font-size: 13px; line-height: 1.65; margin-bottom: 8px; }
+    .pwtch { font-size: 12px; color: var(--pur); line-height: 1.5; }
 
     /* Hypothesis */
     #hbox {
       background: rgba(88,166,255,.06); border: 1px solid rgba(88,166,255,.18);
-      border-radius: 6px; padding: 10px;
-      font-size: 12px; line-height: 1.65;
+      border-radius: 8px; padding: 12px; font-size: 13px; line-height: 1.7;
     }
 
-    /* Journal entries */
-    .je  { padding: 8px 0; border-bottom: 1px solid rgba(48,54,61,.4); font-size: 11px; }
-    .jt  { color: var(--dim); font-size: 10px; margin-bottom: 3px; }
-    .jp  { font-weight: 700; margin-bottom: 3px; }
-    .jup { color: var(--grn); } .jdn { color: var(--red); } .jsw { color: var(--dim); }
-    .jr  { color: var(--dim); line-height: 1.45; margin-bottom: 3px; }
-    .jres { font-size: 10px; font-weight: 700; }
-    .jok { color: var(--grn); } .jno { color: var(--red); } .jpnd { color: var(--ylw); }
+    /* Journal */
+    .je   { padding: 10px 0; border-bottom: 1px solid rgba(48,54,61,.4); font-size: 12px; }
+    .jt   { color: var(--dim); font-size: 11px; margin-bottom: 4px; }
+    .jp   { font-weight: 700; margin-bottom: 4px; font-size: 13px; }
+    .jup  { color: var(--grn); } .jdn { color: var(--red); } .jsw { color: var(--dim); }
+    .jr   { color: var(--dim); line-height: 1.5; margin-bottom: 4px; font-size: 12px; }
+    .jres { font-size: 11px; font-weight: 700; }
+    .jok  { color: var(--grn); } .jno { color: var(--red); } .jpnd { color: var(--ylw); }
 
-    ::-webkit-scrollbar { width: 5px; }
-    ::-webkit-scrollbar-track { background: var(--bg2); }
-    ::-webkit-scrollbar-thumb { background: var(--bd); border-radius: 3px; }
+    /* Mobile stats row inside panel */
+    #mob-stats { display: none; }
+
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--bd); border-radius: 2px; }
     .dim { color: var(--dim); }
-    .lod { color: var(--dim); font-style: italic; font-size: 12px; }
+    .lod { color: var(--dim); font-style: italic; font-size: 13px; }
 
-    @media (max-width: 700px) {
-      #rpanel { width: 100%; border-left: none; border-top: 1px solid var(--bd); }
-      #main { flex-direction: column; }
+    /* ════════════════════════════════
+       MOBILE STYLES (≤ 768px)
+       ════════════════════════════════ */
+    @media (max-width: 768px) {
+      html, body { overflow: hidden; }
+
+      /* Header compact */
+      #hdr { padding: 6px 10px; gap: 6px; }
+      #logo { font-size: 13px; }
+      #sbar { display: none; }  /* hide desktop stats bar */
+
+      /* Main: chart on top, content below, controlled by tabs */
+      #main { flex-direction: column; overflow: hidden; }
+
+      /* Chart takes fixed portion of screen */
+      #cpanel { height: 42vh; flex-shrink: 0; min-height: 200px; }
+
+      /* Panel becomes a full scrollable area below chart */
+      #rpanel {
+        width: 100%; min-width: 0; border-left: none;
+        border-top: 1px solid var(--bd);
+        flex: 1; overflow-y: auto;
+      }
+
+      /* Show only the active tab content */
+      .tab-pane          { display: none; }
+      .tab-pane.active   { display: block; }
+
+      /* Bottom nav */
+      #tabnav {
+        display: flex; flex-shrink: 0;
+        background: var(--bg2); border-top: 1px solid var(--bd);
+        padding-bottom: var(--safe-bottom);
+      }
+      .tabt {
+        flex: 1; display: flex; flex-direction: column; align-items: center;
+        gap: 2px; padding: 8px 4px; cursor: pointer;
+        font-size: 10px; color: var(--dim); border: none; background: none;
+        -webkit-appearance: none; min-height: 50px;
+      }
+      .tabt .ti { font-size: 20px; line-height: 1; }
+      .tabt.on  { color: var(--blu); }
+
+      /* Mobile stats inside analysis pane */
+      #mob-stats {
+        display: flex; gap: 16px; padding: 10px 12px;
+        border-bottom: 1px solid var(--bd); font-size: 12px;
+        background: var(--bg2);
+      }
+
+      /* Bias label bigger on mobile */
+      #blbl { font-size: 28px; }
+      #bsum { font-size: 13px; }
+
+      /* Bigger touch targets */
+      .btn  { padding: 10px 16px; font-size: 14px; min-height: 44px; }
+      .tfb  { padding: 7px 10px; min-height: 34px; }
+      #sym  { padding: 8px 10px; font-size: 14px; min-height: 36px; }
     }
   </style>
 </head>
 <body>
 <div id="app">
 
+  <!-- Header -->
   <div id="hdr">
     <span id="logo">▪ FX BRAIN</span>
     <div class="sep"></div>
-    <input id="sym" type="text" value="NAS100" placeholder="NAS100" title="Try: NAS100, EURUSD, GOLD, BTC, SP500..."/>
-    <div class="sep"></div>
+    <input id="sym" type="text" value="NAS100" placeholder="NAS100"
+           autocomplete="off" autocorrect="off" autocapitalize="characters" spellcheck="false"/>
     <div class="tfbtns">
       <button class="tfb" data-tf="1m">1M</button>
       <button class="tfb" data-tf="5m">5M</button>
@@ -305,17 +373,16 @@ _INDEX_HTML = """<!doctype html>
       <button class="tfb" data-tf="4h">4H</button>
       <button class="tfb" data-tf="1d">1D</button>
     </div>
-    <div class="sep"></div>
-    <button class="btn pri" id="btn-obs">👁 Watch &amp; Predict</button>
-    <button class="btn" id="btn-ref">↺</button>
+    <button class="btn pri" id="btn-obs">👁 Watch</button>
     <div id="live"><div id="dot"></div><span>LIVE</span></div>
-    <span id="upd">—</span>
   </div>
 
+  <!-- Price strip -->
   <div id="pstrip">
-    <span class="dim" style="font-size:10px;font-weight:700;">PRICE</span>
+    <span class="dim" style="font-size:10px;font-weight:700;flex-shrink:0">PRICE</span>
   </div>
 
+  <!-- Desktop stats bar -->
   <div id="sbar">
     <div class="si"><span class="sl">Observations:</span><span class="sv" id="st-tot">—</span></div>
     <div class="si"><span class="sl">Verified:</span><span class="sv" id="st-ver">—</span></div>
@@ -323,50 +390,79 @@ _INDEX_HTML = """<!doctype html>
     <span id="snt">AI learns from whether its predictions were correct</span>
   </div>
 
+  <!-- Main content -->
   <div id="main">
+
+    <!-- Chart panel -->
     <div id="cpanel"><div id="chart"></div></div>
 
+    <!-- Analysis panel -->
     <div id="rpanel">
 
-      <div id="bcard">
-        <div id="blbl" class="gn">—</div>
-        <div id="cbw"><div id="cb"></div></div>
-        <div id="cnum">Confidence: —</div>
-        <div id="bsum" class="lod">
-          Click "Watch &amp; Predict" to start.<br/>
-          The AI reads raw NAS100 price data (no indicators) and discovers patterns on its own.
-          Every prediction is logged and verified — the AI learns from being right or wrong.
+      <!-- Mobile stats (shown in analysis tab on phone) -->
+      <div id="mob-stats">
+        <div class="si"><span class="sl">Obs:</span><span class="sv" id="mst-tot">—</span></div>
+        <div class="si"><span class="sl">Verified:</span><span class="sv" id="mst-ver">—</span></div>
+        <div class="si"><span class="sl">Accuracy:</span><span class="sv" id="mst-acc">—</span></div>
+      </div>
+
+      <!-- Tab pane: Analysis (default visible on mobile) -->
+      <div class="tab-pane active" id="pane-analysis">
+        <div id="bcard">
+          <div id="blbl" class="gn">—</div>
+          <div id="cbw"><div id="cb"></div></div>
+          <div id="cnum">Confidence: —</div>
+          <div id="bsum" class="lod">
+            Tap "👁 Watch" to start.<br/>
+            The AI reads raw price data across all timeframes and discovers
+            patterns on its own — no indicators. Every prediction is saved
+            and verified so the AI learns from being right or wrong.
+          </div>
+        </div>
+        <div class="sec">
+          <div class="stitle">What the AI notices</div>
+          <div id="obs-list"><span class="lod">—</span></div>
+        </div>
+        <div class="sec">
+          <div class="stitle">Prediction</div>
+          <div id="pcard">
+            <div id="pdir" class="pdir gn">—</div>
+            <div id="ptgt" class="ptgt"></div>
+            <div id="prsn" class="prsn lod">—</div>
+            <div id="pwtch" class="pwtch"></div>
+          </div>
+        </div>
+        <div class="sec">
+          <div class="stitle">AI's current market model</div>
+          <div id="hbox" class="lod">—</div>
         </div>
       </div>
 
-      <div class="sec">
-        <div class="stitle">What the AI notices right now</div>
-        <div id="obs-list"><span class="lod">—</span></div>
-      </div>
-
-      <div class="sec">
-        <div class="stitle">Prediction</div>
-        <div id="pcard">
-          <div id="pdir" class="pdir gn">—</div>
-          <div id="ptgt" class="ptgt"></div>
-          <div id="prsn" class="prsn lod">—</div>
-          <div id="pwtch" class="pwtch"></div>
+      <!-- Tab pane: Journal -->
+      <div class="tab-pane" id="pane-journal">
+        <div class="sec" style="border-bottom:none">
+          <div class="stitle">Learning journal</div>
+          <div id="jlist"><span class="lod">No observations yet. Tap Watch.</span></div>
         </div>
       </div>
 
-      <div class="sec">
-        <div class="stitle">AI's current model of this market</div>
-        <div id="hbox" class="lod">—</div>
-      </div>
+    </div><!-- /rpanel -->
+  </div><!-- /main -->
 
-      <div class="sec">
-        <div class="stitle">Learning journal</div>
-        <div id="jlist"><span class="lod">No observations yet. Click Watch &amp; Predict.</span></div>
-      </div>
-
-    </div>
+  <!-- Mobile bottom tab bar -->
+  <div id="tabnav">
+    <button class="tabt" data-pane="chart">
+      <span class="ti">📈</span><span>Chart</span>
+    </button>
+    <button class="tabt on" data-pane="analysis">
+      <span class="ti">🧠</span><span>Analysis</span>
+    </button>
+    <button class="tabt" data-pane="journal">
+      <span class="ti">📋</span><span>Journal</span>
+    </button>
   </div>
-</div>
+
+</div><!-- /app -->
 
 <script>
 // ── Chart ─────────────────────────────────────────────────────────────────────
@@ -447,12 +543,36 @@ function renderStrip(prices) {
 // ── Stats ─────────────────────────────────────────────────────────────────────
 function renderStats(s) {
   if (!s) return;
-  document.getElementById('st-tot').textContent = s.total_observations ?? '—';
-  document.getElementById('st-ver').textContent = s.verified ?? '—';
+  const tot = s.total_observations ?? '—';
+  const ver = s.verified ?? '—';
   const acc = s.accuracy_pct;
-  const el  = document.getElementById('st-acc');
-  el.textContent = acc != null ? acc + '%' : '—';
-  el.style.color = acc == null ? '' : acc >= 60 ? '#3fb950' : acc >= 45 ? '#d29922' : '#f85149';
+  const accTxt = acc != null ? acc + '%' : '—';
+  const accCol = acc == null ? '' : acc >= 60 ? '#3fb950' : acc >= 45 ? '#d29922' : '#f85149';
+
+  document.getElementById('st-tot').textContent = tot;
+  document.getElementById('st-ver').textContent = ver;
+  const el = document.getElementById('st-acc');
+  el.textContent = accTxt; el.style.color = accCol;
+
+  // Mobile stats row
+  document.getElementById('mst-tot').textContent = tot;
+  document.getElementById('mst-ver').textContent = ver;
+  const mel = document.getElementById('mst-acc');
+  mel.textContent = accTxt; mel.style.color = accCol;
+}
+
+// ── Tab switching (mobile) ────────────────────────────────────────────────────
+function switchTab(pane) {
+  document.querySelectorAll('.tabt').forEach(b =>
+    b.classList.toggle('on', b.dataset.pane === pane));
+  if (pane === 'chart') {
+    document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+    document.getElementById('rpanel').style.display = 'none';
+  } else {
+    document.getElementById('rpanel').style.display = '';
+    document.querySelectorAll('.tab-pane').forEach(p =>
+      p.classList.toggle('active', p.id === 'pane-' + pane));
+  }
 }
 
 // ── Observe ───────────────────────────────────────────────────────────────────
@@ -472,7 +592,7 @@ async function observe() {
   } catch(e) {
     document.getElementById('bsum').textContent = 'Error: ' + e.message;
   } finally {
-    btn.disabled = false; btn.textContent = '👁 Watch & Predict';
+    btn.disabled = false; btn.textContent = '👁 Watch';
   }
 }
 
@@ -572,13 +692,13 @@ function esc(s) {
 
 // ── Events ────────────────────────────────────────────────────────────────────
 document.getElementById('btn-obs').addEventListener('click', observe);
-document.getElementById('btn-ref').addEventListener('click', loadChart);
 document.getElementById('sym').addEventListener('keydown', e => { if (e.key === 'Enter') observe(); });
 document.querySelectorAll('.tfb').forEach(b => b.addEventListener('click', () => {
   tf = b.dataset.tf;
   document.querySelectorAll('.tfb').forEach(x => x.classList.toggle('on', x.dataset.tf === tf));
   loadChart();
 }));
+document.querySelectorAll('.tabt').forEach(b => b.addEventListener('click', () => switchTab(b.dataset.pane)));
 
 // ── Auto-refresh chart every 60s ──────────────────────────────────────────────
 initChart();
