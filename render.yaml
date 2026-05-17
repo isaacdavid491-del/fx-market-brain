@@ -6,22 +6,14 @@ services:
     autoDeploy: true
     healthCheckPath: /api/health
     envVars:
-      - key: OANDA_TOKEN
-        sync: false
-      - key: OANDA_ACCOUNT_ID
-        sync: false
-      - key: ADMIN_KEY
-        sync: false
       - key: ANTHROPIC_API_KEY
         sync: false
       - key: AI_MODEL
         value: claude-sonnet-4-6
       - key: DEFAULT_INSTRUMENT
-        value: EUR_USD
-      - key: INGEST_EVERY_SECONDS
-        value: "60"
-      - key: HISTORY_DAYS
-        value: "30"
+        value: NAS100
+      - key: ADMIN_KEY
+        sync: false
     disk:
       name: data
       mountPath: /data
