@@ -1,0 +1,23 @@
+{
+  "skill_name": "video-to-skill",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "https://www.youtube.com/watch?v=dQw4w9WgXcQ this guy walks through setting up a whole automated deploy pipeline, build this skill",
+      "expected_output": "Claude checks for the claude-video plugin and a Gemini connector before doing anything. Neither is available in a plain Claude Code environment by default, so Claude should stop and clearly explain what's missing and how to add it, rather than guessing at the video's content from title/metadata alone or proceeding with only one source.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "turn this instagram reel into an agent: instagram.com/reel/Db1USzsMNnZ",
+      "expected_output": "Same as eval 1 — Instagram is also just a video link, so the same prerequisite-check-and-stop behavior applies. Claude should not fabricate what the reel shows.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "I already ran claude-video on this tutorial and got a transcript, and I pasted the same link to Gemini separately and got its read too - here are both, can you reconcile them and build the skill: [Read A: ...steps...] [Read B: ...steps...]",
+      "expected_output": "Prerequisites are effectively already satisfied (both reads are supplied), so Claude should skip straight to Step 3 (reconcile), label every line confirmed/single-source/conflict, surface only the conflicts to the user, and only hand off to skill-creator after conflicts are resolved.",
+      "files": []
+    }
+  ]
+}
