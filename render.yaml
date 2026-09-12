@@ -18,6 +18,27 @@ services:
         value: "60"
       - key: HISTORY_DAYS
         value: "30"
+      # --- NASDAQ ICT agent farm ---
+      - key: NASDAQ_SYMBOL
+        value: NAS100_USD
+      - key: CORRELATED_SYMBOL
+        value: SPX500_USD
+      - key: ICT_HTF
+        value: 1h
+      - key: ICT_MTF
+        value: 15m
+      - key: ICT_LTF
+        value: 5m
+      - key: ICT_REQUIRE_KILLZONE
+        value: "true"
+      - key: ICT_RISK_PER_TRADE
+        value: "0.005"
+      - key: ICT_MAX_TRADES_PER_DAY
+        value: "3"
+      - key: ICT_DAILY_LOSS_LIMIT
+        value: "0.03"
+      - key: ICT_EQUITY
+        value: "100000"
     disk:
       name: data
       mountPath: /data

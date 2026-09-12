@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>NASDAQ ICT Agent Farm</title>
+<style>
+  :root {
+    --bg: #0e1117; --panel: #161b22; --line: #262d38; --ink: #e6edf3;
+    --muted: #8b949e; --long: #2ea043; --short: #f85149; --flat: #8b949e;
+    --accent: #58a6ff; --warn: #d29922;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    padding: 16px;
+  }
+  h1 { font-size: 18px; margin: 0 0 2px; }
+  h2 { font-size: 14px; margin: 0 0 10px; color: var(--muted); font-weight: 600;
+       text-transform: uppercase; letter-spacing: .05em; }
+  .sub { color: var(--muted); font-size: 12px; margin-bottom: 16px; }
+  .bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 16px; }
+  button, select, input {
+    background: var(--panel); color: var(--ink); border: 1px solid var(--line);
+    border-radius: 8px; padding: 7px 12px; font: inherit;
+  }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button[disabled] { opacity: .5; cursor: default; }
+  .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+  .verdict { font-size: 26px; font-weight: 700; letter-spacing: .02em; }
+  .LONG { color: var(--long); } .SHORT { color: var(--short); }
+  .STAND_ASIDE, .NEUTRAL { color: var(--flat); }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .why { color: var(--muted); font-size: 12px; }
+  .meter { height: 6px; background: var(--line); border-radius: 3px; position: relative; min-width: 70px; }
+  .meter > i { position: absolute; top: 0; bottom: 0; border-radius: 3px; }
+  .kv { display: flex; justify-content: space-between; gap: 10px; padding: 4px 0; border-bottom: 1px solid var(--line); }
+  .kv:last-child { border-bottom: 0; }
+  .kv span:first-child { color: var(--muted); }
+  .kv span:last-child { font-variant-numeric: tabular-nums; }
+  .tag { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 11px;
+         border: 1px solid var(--line); color: var(--muted); }
+  .veto { color: var(--warn); }
+  .disclaimer { margin-top: 18px; color: var(--muted); font-size: 11px;
+                border-top: 1px solid var(--line); padding-top: 12px; }
+  .err { color: var(--short); }
+  @media (max-width: 640px) { td.hideable, th.hideable { display: none; } }
+</style>
+</head>
+<body>
+<h1>NASDAQ ICT Agent Farm</h1>
+<div class="sub" id="subtitle">Loading…</div>
+
+<div class="bar">
+  <button id="refresh">Refresh</button>
+  <label><input type="checkbox" id="ignorekz" /> Ignore killzone gating</label>
+  <label>Equity <input type="number" id="equity" value="100000" step="1000" style="width:110px" /></label>
+  <button id="runbt">Run 14-day backtest</button>
+  <span id="status" class="why"></span>
+</div>
+
+<div class="grid">
+  <div class="panel">
+    <h2>Verdict</h2>
+    <div class="verdict" id="action">…</div>
+    <div class="why" id="narrative"></div>
+    <div id="vetoes"></div>
+  </div>
+  <div class="panel">
+    <h2>Trade plan</h2>
+    <div id="plan"><div class="why">No plan.</div></div>
+  </div>
+  <div class="panel">
+    <h2>Consensus</h2>
+    <div id="consensus"></div>
+  </div>
+</div>
+
+<div class="panel" style="margin-top:12px">
+  <h2>Agents</h2>
+  <table>
+    <thead><tr>
+      <th>Agent</th><th>View</th><th class="num">Score</th><th class="num">Conf</th>
+      <th class="num hideable">Weight</th><th class="num">Contribution</th><th class="hideable">Reasoning</th>
+    </tr></thead>
+    <tbody id="agents"><tr><td colspan="7" class="why">Loading…</td></tr></tbody>
+  </table>
+</div>
+
+<div class="panel" style="margin-top:12px" id="btpanel" hidden>
+  <h2>Backtest</h2>
+  <div id="btout"></div>
+</div>
+
+<div class="disclaimer" id="disclaimer"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const fmt = (n, d = 2) => (n === null || n === undefined) ? "—" : Number(n).toFixed(d);
+
+function meter(value) {
+  const pct = Math.min(Math.abs(value) / 1.2, 1) * 50;
+  const colour = value > 0 ? "var(--long)" : value < 0 ? "var(--short)" : "var(--flat)";
+  const style = value >= 0
+    ? `left:50%;width:${pct}%;background:${colour}`
+    : `right:50%;width:${pct}%;background:${colour}`;
+  return `<div class="meter"><i style="${style}"></i></div>`;
+}
+
+async function load() {
+  $("status").textContent = "loading…";
+  const params = new URLSearchParams();
+  if ($("ignorekz").checked) params.set("require_killzone", "false");
+  const equity = $("equity").value;
+  if (equity) params.set("equity", equity);
+
+  let data;
+  try {
+    const res = await fetch(`/api/ict/decision?${params}`);
+    data = await res.json();
+    if (!res.ok) throw new Error(data.detail || res.statusText);
+  } catch (err) {
+    $("status").innerHTML = `<span class="err">${err.message}</span>`;
+    return;
+  }
+
+  $("subtitle").textContent =
+    `${data.symbol} — last price ${fmt(data.price)} — evaluated ${new Date(data.timestamp * 1000).toUTCString()}`;
+  $("action").textContent = data.action;
+  $("action").className = "verdict " + data.action;
+  $("narrative").textContent = data.narrative || "";
+  $("disclaimer").textContent = data.disclaimer || "";
+
+  $("vetoes").innerHTML = (data.vetoes || []).length
+    ? data.vetoes.map(v => `<div class="veto">⚠ ${v.agent}: ${v.reason}</div>`).join("")
+    : "";
+
+  $("consensus").innerHTML = [
+    ["Net score", fmt(data.net_score, 3)],
+    ["Conviction (after gates)", fmt(data.conviction, 3)],
+    ["Agreement", (data.agreement * 100).toFixed(0) + "%"],
+    ["Agents reporting", data.agents.length],
+  ].map(([k, v]) => `<div class="kv"><span>${k}</span><span>${v}</span></div>`).join("");
+
+  if (data.plan) {
+    const p = data.plan;
+    $("plan").innerHTML = [
+      ["Direction", p.direction],
+      ["Entry", `${fmt(p.entry)} (${p.entry_type.replace(/_/g, " ")})`],
+      ["Stop", fmt(p.stop)],
+      ["Target", fmt(p.take_profit)],
+      ["Second target", fmt(p.secondary_target)],
+      ["Reward:risk", fmt(p.risk_reward, 1) + " : 1"],
+      ["Size", `${p.units} units`],
+      ["Risk", fmt(p.risk_currency)],
+    ].map(([k, v]) => `<div class="kv"><span>${k}</span><span>${v}</span></div>`).join("")
+      + `<div class="why" style="margin-top:8px">${p.reasoning.join(" ")}</div>`;
+  } else {
+    $("plan").innerHTML = `<div class="why">No plan: the farm is standing aside.</div>`;
+  }
+
+  $("agents").innerHTML = data.agents.map(a => `
+    <tr>
+      <td>${a.agent}<div class="why">${a.role}</div></td>
+      <td class="${a.direction}">${a.veto ? '<span class="veto">VETO</span>' : a.direction}</td>
+      <td class="num">${fmt(a.score)}</td>
+      <td class="num">${fmt(a.confidence)}</td>
+      <td class="num hideable">${fmt(a.weight, 1)}</td>
+      <td class="num">${fmt(a.contribution)} ${meter(a.contribution)}</td>
+      <td class="why hideable">${a.veto ? a.veto_reason : a.rationale}</td>
+    </tr>`).join("");
+
+  $("status").textContent = "updated " + new Date().toLocaleTimeString();
+}
+
+async function backtest() {
+  $("runbt").disabled = true;
+  $("status").textContent = "backtesting, this takes a while…";
+  $("btpanel").hidden = false;
+  $("btout").innerHTML = `<div class="why">Running…</div>`;
+  try {
+    const params = new URLSearchParams({ days: "14", step_minutes: "5", include_trades: "true" });
+    if ($("ignorekz").checked) params.set("require_killzone", "false");
+    const res = await fetch(`/api/ict/backtest?${params}`);
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || "backtest failed");
+    const m = data.metrics;
+    const rows = [
+      ["Trades", m.trades], ["Win rate", (m.win_rate * 100).toFixed(0) + "%"],
+      ["Total R", fmt(m.total_r, 2)], ["Expectancy", fmt(m.expectancy_r, 2) + " R"],
+      ["Profit factor", fmt(m.profit_factor, 2)],
+      ["Max drawdown", fmt(m.max_drawdown_pct, 2) + "%"],
+      ["Return", fmt(m.return_pct, 2) + "%"],
+      ["Decisions evaluated", data.decisions_evaluated],
+      ["Signals generated", data.signals_generated],
+    ];
+    $("btout").innerHTML = rows.map(([k, v]) =>
+      `<div class="kv"><span>${k}</span><span>${v}</span></div>`).join("")
+      + (data.warnings || []).map(w => `<div class="veto">⚠ ${w}</div>`).join("")
+      + `<div class="why" style="margin-top:10px">Data provider: ${data.provider}.
+         Fills are simulated on 1-minute bars with the stop assumed first when a
+         bar spans both levels. No slippage, commission or financing is modelled.</div>`;
+  } catch (err) {
+    $("btout").innerHTML = `<div class="err">${err.message}</div>`;
+  } finally {
+    $("runbt").disabled = false;
+    $("status").textContent = "";
+  }
+}
+
+$("refresh").onclick = load;
+$("runbt").onclick = backtest;
+$("ignorekz").onchange = load;
+load();
+setInterval(load, 60000);
+</script>
+</body>
+</html>

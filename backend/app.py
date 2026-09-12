@@ -1,7 +1,7 @@
+import logging
 import os
 import json
 import time
-import sqlite3
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any
 
@@ -32,153 +32,20 @@ OANDA_API_BASE = "https://api-fxpractice.oanda.com/v3"
 app = FastAPI(title="FX Market Brain")
 
 # =============================
-# DB
+# DB and resampling
 # =============================
+# Storage and timeframe aggregation live in backend.store so the FX model and
+# the NASDAQ ICT agent farm read exactly the same bars.
 
-def db() -> sqlite3.Connection:
-    # FIX 2: Ensure DB directory exists before connecting (important on Render)
-    db_dir = os.path.dirname(DB_PATH)
-    if db_dir:
-        os.makedirs(db_dir, exist_ok=True)  # keep safe; if dirname is "", skip
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    conn.execute("PRAGMA journal_mode=WAL;")
-    return conn
-
-def init_db() -> None:
-    # FIX 2 (again): ensure directory exists at startup too
-    db_dir = os.path.dirname(DB_PATH)
-    if db_dir:
-        os.makedirs(db_dir, exist_ok=True)
-
-    conn = db()
-    conn.execute("""
-      CREATE TABLE IF NOT EXISTS candles_1m (
-        symbol TEXT NOT NULL,
-        t INTEGER NOT NULL,
-        o REAL NOT NULL,
-        h REAL NOT NULL,
-        l REAL NOT NULL,
-        c REAL NOT NULL,
-        v REAL NOT NULL,
-        PRIMARY KEY(symbol, t)
-      );
-    """)
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_candles_1m_symbol_t ON candles_1m(symbol, t);")
-    conn.commit()
-    conn.close()
-
-# =============================
-# OANDA client
-# =============================
-
-def oanda_headers() -> Dict[str, str]:
-    if not OANDA_TOKEN:
-        raise RuntimeError("Missing OANDA_TOKEN")
-    return {"Authorization": f"Bearer {OANDA_TOKEN}"}
-
-def oanda_get_candles(symbol: str, granularity: str, count: int = 500, to_rfc3339: Optional[str] = None) -> List[Dict[str, Any]]:
-    # granularity: M1, M5, M15, H1...
-    params = {"granularity": granularity, "price": "M", "count": str(count)}
-    if to_rfc3339:
-        params["to"] = to_rfc3339
-    url = f"{OANDA_API_BASE}/instruments/{symbol}/candles"
-    r = requests.get(url, headers=oanda_headers(), params=params, timeout=30)
-    if r.status_code != 200:
-        raise RuntimeError(f"OANDA error {r.status_code}: {r.text[:500]}")
-    data = r.json()
-    return data.get("candles", [])
-
-def parse_oanda_candles(candles: List[Dict[str, Any]]) -> pd.DataFrame:
-    rows = []
-    for x in candles:
-        if not x.get("complete"):
-            continue
-        t = x["time"]
-        dt = datetime.fromisoformat(t.replace("Z", "+00:00"))
-        ts = int(dt.timestamp())
-        mid = x["mid"]
-        rows.append({
-            "t": ts,
-            "o": float(mid["o"]),
-            "h": float(mid["h"]),
-            "l": float(mid["l"]),
-            "c": float(mid["c"]),
-            "v": float(x.get("volume", 0.0)),
-        })
-    if not rows:
-        return pd.DataFrame(columns=["t","o","h","l","c","v"])
-    df = pd.DataFrame(rows).drop_duplicates(subset=["t"]).sort_values("t")
-    return df
-
-def upsert_1m(symbol: str, df: pd.DataFrame) -> int:
-    if df.empty:
-        return 0
-    conn = db()
-    cur = conn.cursor()
-    n = 0
-    for r in df.itertuples(index=False):
-        try:
-            cur.execute(
-                "INSERT OR REPLACE INTO candles_1m(symbol,t,o,h,l,c,v) VALUES (?,?,?,?,?,?,?)",
-                (symbol, int(r.t), float(r.o), float(r.h), float(r.l), float(r.c), float(r.v)),
-            )
-            n += 1
-        except Exception:
-            continue
-    conn.commit()
-    conn.close()
-    return n
-
-def latest_ts(symbol: str) -> Optional[int]:
-    conn = db()
-    cur = conn.cursor()
-    cur.execute("SELECT MAX(t) FROM candles_1m WHERE symbol = ?", (symbol,))
-    out = cur.fetchone()[0]
-    conn.close()
-    return int(out) if out is not None else None
-
-def load_1m(symbol: str, start_ts: int, end_ts: int) -> pd.DataFrame:
-    conn = db()
-    q = """
-      SELECT t,o,h,l,c,v FROM candles_1m
-      WHERE symbol = ? AND t BETWEEN ? AND ?
-      ORDER BY t ASC
-    """
-    df = pd.read_sql_query(q, conn, params=(symbol, start_ts, end_ts))
-    conn.close()
-    return df
-
-# =============================
-# Multi-timeframe resample (derived from 1m)
-# =============================
-
-TF_MAP = {
-    "1m": "1T",
-    "5m": "5T",
-    "15m": "15T",
-    "1h": "1H",
-    "4h": "4H",
-    "1d": "1D",
-}
-
-def resample_ohlcv(df_1m: pd.DataFrame, tf: str) -> pd.DataFrame:
-    if df_1m.empty:
-        return df_1m
-    if tf not in TF_MAP:
-        raise ValueError("Unsupported tf")
-    d = df_1m.copy()
-    d["dt"] = pd.to_datetime(d["t"], unit="s", utc=True)
-    d = d.set_index("dt")
-    rule = TF_MAP[tf]
-    out = pd.DataFrame()
-    out["o"] = d["o"].resample(rule).first()
-    out["h"] = d["h"].resample(rule).max()
-    out["l"] = d["l"].resample(rule).min()
-    out["c"] = d["c"].resample(rule).last()
-    out["v"] = d["v"].resample(rule).sum()
-    out = out.dropna()
-    out["t"] = (out.index.view("int64") // 10**9).astype(int)
-    return out.reset_index(drop=True)[["t","o","h","l","c","v"]]
+from backend.store import (  # noqa: E402
+    TF_MAP,
+    db,
+    init_db,
+    latest_ts,
+    load_1m,
+    resample_ohlcv,
+    upsert_1m,
+)
 
 # =============================
 # AI baseline (learns from data, multi-TF features)
@@ -325,37 +192,40 @@ def infer_signal(symbol: str) -> Dict[str, Any]:
 # Ingestion scheduler
 # =============================
 
+# Candle fetching and history seeding are shared with the agent farm.
+from backend.data.feed import ingest_latest, seed_history  # noqa: E402
+from backend.data.providers import get_provider  # noqa: E402
+
+
 def ingest_once(symbol: str) -> Dict[str, Any]:
-    candles = oanda_get_candles(symbol, "M1", count=500)
-    df = parse_oanda_candles(candles)
-    n = upsert_1m(symbol, df)
-    return {"ok": True, "inserted": n, "latest_ts": latest_ts(symbol)}
+    out = ingest_latest(symbol, get_provider())
+    return {"ok": True, "inserted": out["written"], "latest_ts": out["latest_ts"]}
+
 
 def ensure_seed_history(symbol: str) -> Dict[str, Any]:
-    target_start = datetime.now(timezone.utc) - timedelta(days=HISTORY_DAYS)
-    to_time = datetime.now(timezone.utc)
+    out = seed_history(symbol, days=HISTORY_DAYS, provider=get_provider())
+    return {"ok": True, "seeded": out["written"]}
 
-    total = 0
-    for _ in range(200):
-        candles = oanda_get_candles(symbol, "M1", count=500, to_rfc3339=to_time.isoformat())
-        df = parse_oanda_candles(candles)
-        if df.empty:
-            break
-        total += upsert_1m(symbol, df)
-        oldest = int(df["t"].min())
-        if datetime.fromtimestamp(oldest, tz=timezone.utc) <= target_start:
-            break
-        to_time = datetime.fromtimestamp(oldest - 60, tz=timezone.utc)
-        time.sleep(0.2)
-    return {"ok": True, "seeded": total}
 
 scheduler = BackgroundScheduler(daemon=True)
 
+
+def ingest_symbols() -> List[str]:
+    """Every instrument the scheduler keeps fresh: the FX pair plus the
+    NASDAQ instruments the agent farm trades."""
+    from backend.service import get_service
+
+    service = get_service()
+    symbols = [DEFAULT_INSTRUMENT, *service.symbols()]
+    return list(dict.fromkeys(s for s in symbols if s))
+
+
 def scheduled_ingest():
-    try:
-        ingest_once(DEFAULT_INSTRUMENT)
-    except Exception:
-        pass
+    for symbol in ingest_symbols():
+        try:
+            ingest_once(symbol)
+        except Exception as exc:  # noqa: BLE001 - one bad feed must not stop the rest
+            logging.getLogger("ingest").warning("ingest %s failed: %s", symbol, exc)
 
 # =============================
 # API
@@ -364,16 +234,30 @@ def scheduled_ingest():
 @app.on_event("startup")
 def _startup():
     init_db()
-    try:
-        ensure_seed_history(DEFAULT_INSTRUMENT)
-    except Exception:
-        pass
+    for symbol in ingest_symbols():
+        try:
+            ensure_seed_history(symbol)
+        except Exception as exc:  # noqa: BLE001 - start up even with a cold feed
+            logging.getLogger("startup").warning("seeding %s failed: %s", symbol, exc)
     scheduler.add_job(scheduled_ingest, "interval", seconds=INGEST_EVERY_SECONDS, id="ingest")
     scheduler.start()
 
+# The NASDAQ ICT agent farm lives under /api/ict with a dashboard at /ict.
+from backend.api_ict import dashboard_router as ict_dashboard_router  # noqa: E402
+from backend.api_ict import router as ict_router  # noqa: E402
+
+app.include_router(ict_router)
+app.include_router(ict_dashboard_router)
+
+
 @app.get("/api/health")
 def health():
-    return {"ok": True, "instrument": DEFAULT_INSTRUMENT, "latest_ts": latest_ts(DEFAULT_INSTRUMENT)}
+    return {
+        "ok": True,
+        "instrument": DEFAULT_INSTRUMENT,
+        "latest_ts": latest_ts(DEFAULT_INSTRUMENT),
+        "ict_farm": "/ict",
+    }
 
 @app.get("/", response_class=HTMLResponse)
 def home():
@@ -441,6 +325,7 @@ _INDEX_HTML = """
 <body>
   <div id="top">
     <div class="pill"><b>FX Market Brain</b></div>
+    <a class="pill" href="/ict" style="text-decoration:none;color:inherit">NASDAQ ICT Agent Farm &rarr;</a>
     <label>TF:
       <select id="tf">
         <option>1m</option><option>5m</option><option>15m</option><option>1h</option><option>4h</option><option>1d</option>
