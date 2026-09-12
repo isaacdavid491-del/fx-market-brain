@@ -35,6 +35,9 @@ export OANDA_TOKEN=your_practice_token
 python -m backend.cli validate --days 60
 ```
 
+Step-by-step instructions, including a no-install route through a deployed
+service: **[docs/running-the-real-test.md](docs/running-the-real-test.md)**.
+
 That seeds real NASDAQ history, replays the farm across several exit policies,
 and pairs them on matched trades. It prints `REAL MARKET DATA` or
 `SYNTHETIC DATA - NOT A TEST OF THE STRATEGY` at the top, and exits non-zero

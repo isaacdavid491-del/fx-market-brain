@@ -119,3 +119,15 @@ def test_backtest_reports_missing_history(client):
     body = res.json()
     assert body["ok"] is False
     assert "seed it first" in body["error"]
+
+
+def test_validate_endpoint_reports_status(client, seeded):
+    res = client.get("/api/ict/validate",
+                     params={"days": 10, "step_minutes": 60, "seed": "false"})
+    assert res.status_code == 200
+    body = res.json()
+    assert body["status"] in ("real", "synthetic", "no_data")
+    assert "headline" in body and "text" in body
+    # The synthetic feed must never be reported as a valid validation.
+    assert body["valid"] is False
+    assert "NOT A TEST" in body["headline"] or "NOTHING WAS TESTED" in body["headline"]

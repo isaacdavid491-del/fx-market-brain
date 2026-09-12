@@ -141,6 +141,36 @@ def backtest(
     return out
 
 
+@router.get("/validate")
+def validate(
+    symbol: Optional[str] = Query(None),
+    days: int = Query(60, ge=5, le=120),
+    step_minutes: int = Query(15, ge=5, le=60,
+                              description="larger steps finish faster"),
+    seed: bool = Query(True, description="download history first"),
+) -> Dict[str, Any]:
+    """Measure the farm against stored history and say whether it was real.
+
+    The browser-friendly twin of `python -m backend.cli validate`. It is slow,
+    so the default step is coarser than the command line's; a full run over
+    sixty days can take several minutes.
+
+    `status` is the field that matters: `real` means real bars were actually
+    replayed, `synthetic` means the answer is meaningless, and `no_data` means
+    nothing was tested at all.
+    """
+    from backend.validate import BANNERS, format_report, is_valid_run
+    from backend.validate import run as run_validation
+
+    report = run_validation(symbol=symbol, days=days, step_minutes=step_minutes,
+                            do_seed=seed)
+    report["valid"] = is_valid_run(report)
+    report["headline"] = BANNERS.get(report.get("status", "unknown"))
+    report["text"] = format_report(report)
+    report["disclaimer"] = DISCLAIMER
+    return report
+
+
 @router.post("/admin/ingest")
 def admin_ingest(x_admin_key: Optional[str] = Header(default=None),
                  symbol: Optional[str] = Query(None)) -> Dict[str, Any]:
