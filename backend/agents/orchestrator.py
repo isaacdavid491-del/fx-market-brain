@@ -6,6 +6,12 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from backend.agents.base import LONG, NEUTRAL, SHORT, AgentSignal, BaseAgent, MarketContext
+from backend.agents.book_agents_v2 import (
+    CheckpointAgent,
+    RejectionBlockAgent,
+    VenomAgent,
+    VolumeImbalanceAgent,
+)
 from backend.agents.book_agents import (
     DeliveryResistanceAgent,
     FirstPresentedGapAgent,
@@ -81,17 +87,21 @@ def default_agents() -> List[BaseAgent]:
         OrderBlockAgent(),
         InversionAgent(),
         FirstPresentedGapAgent(),
+        RejectionBlockAgent(),
+        VolumeImbalanceAgent(),
         # Range and location
         PremiumDiscountAgent(),
         SessionRangeAgent(),
         OpeningGapAgent(),
         # Narrative and delivery
         PowerOfThreeAgent(),
+        VenomAgent(),
         DeliveryResistanceAgent(),
         ObsidianWickAgent(),
         SMTDivergenceAgent(),
         # Gates
         KillzoneAgent(),
+        CheckpointAgent(),
         RiskManagerAgent(),
     ]
 

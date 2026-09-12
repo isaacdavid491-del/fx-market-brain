@@ -22,7 +22,7 @@ import pandas as pd
 
 from backend.agents.base import MarketContext
 from backend.agents.orchestrator import AgentFarm, Decision
-from backend.ict.contracts import Contract, get_contract
+from backend.ict.contracts import Contract, RiskLadder, get_contract
 from backend.ict.sessions import ny_day_start, primary_session
 from backend.store import TF_MINUTES, resample_ohlcv
 
@@ -61,17 +61,33 @@ class ExitPolicy:
     """
     name: str = "all_at_target"
     scale_outs: List[Tuple[float, float]] = field(default_factory=list)
+    # Scale-outs expressed as progress toward the objective rather than in R.
+    # The opening-gap ladders of chapter 26 are stated this way: a partial at
+    # half gap, the bulk at full closure, runners at extensions beyond it.
+    # A progress value above 1.0 is an extension past the target.
+    scale_outs_by_progress: List[Tuple[float, float]] = field(default_factory=list)
     breakeven_at_r: Optional[float] = None     # move the stop to entry at this R
+    # Staged protection tied to progress toward the objective, as
+    # (progress fraction, fraction of the ORIGINAL stop distance removed).
+    # Chapter 22: a quarter of the way, take a quarter off the distance; half
+    # way, half off; three quarters of the way, breakeven. The book contrasts
+    # this explicitly with moving every trade to breakeven at one times risk,
+    # because it permits some open risk while partials are banked.
+    stop_ladder: List[Tuple[float, float]] = field(default_factory=list)
     trail_after_r: Optional[float] = None      # begin trailing at this R
     trail_distance_r: float = 1.0
+    source: str = ""                           # which chapter this came from
 
     def as_dict(self) -> Dict[str, Any]:
         return {
             "name": self.name,
             "scale_outs": [[r, f] for r, f in self.scale_outs],
+            "scale_outs_by_progress": [[p, f] for p, f in self.scale_outs_by_progress],
+            "stop_ladder": [[p, f] for p, f in self.stop_ladder],
             "breakeven_at_r": self.breakeven_at_r,
             "trail_after_r": self.trail_after_r,
             "trail_distance_r": self.trail_distance_r,
+            "source": self.source,
         }
 
 
@@ -90,6 +106,38 @@ EXIT_POLICIES: Dict[str, ExitPolicy] = {
                                          breakeven_at_r=1.0),
     "half_at_1R_trail": ExitPolicy("half_at_1R_trail", scale_outs=[(1.0, 0.5)],
                                    trail_after_r=1.5, trail_distance_r=1.0),
+
+    # --- edition 0.6 -----------------------------------------------------
+    # Chapter 22's staged protection, with no scaling of its own, so the
+    # effect of the stop ladder can be seen on its own terms.
+    "progressive_stop": ExitPolicy(
+        "progressive_stop",
+        stop_ladder=[(0.25, 0.25), (0.50, 0.50), (0.75, 1.00)],
+        source="ch22 Model 6 buy-side trade plan",
+    ),
+    # The same ladder alongside a partial, which is how the plan describes it:
+    # partials are banked while the position still carries some open risk.
+    "progressive_stop_half_at_1R": ExitPolicy(
+        "progressive_stop_half_at_1R",
+        scale_outs=[(1.0, 0.5)],
+        stop_ladder=[(0.25, 0.25), (0.50, 0.50), (0.75, 1.00)],
+        source="ch22 combined with a partial",
+    ),
+    # Chapter 26 variant A: the great majority off at the half-gap objective.
+    "gap_bulk_at_half": ExitPolicy(
+        "gap_bulk_at_half",
+        scale_outs_by_progress=[(0.5, 0.75)],
+        source="ch26 variant A, 75-80% at half gap",
+    ),
+    # Chapter 26 variant B: a small partial at half gap, the bulk at full
+    # closure, and small runners left for the extension objectives. The
+    # twelve-unit illustration is two, then seven, then one at each extension.
+    "gap_ladder": ExitPolicy(
+        "gap_ladder",
+        scale_outs_by_progress=[(0.5, 2 / 12), (1.0, 7 / 12),
+                                (1.2, 1 / 12), (1.5, 1 / 12), (2.0, 1 / 12)],
+        source="ch26 variant B, 2 at half gap, 7 at closure, 3 runners",
+    ),
 }
 
 
@@ -213,7 +261,8 @@ class Backtester:
                  max_hold_minutes: int = 240,
                  limit_expiry_minutes: int = 30,
                  bars: int = 250,
-                 exit_policy: Optional[ExitPolicy] = None):
+                 exit_policy: Optional[ExitPolicy] = None,
+                 risk_ladder: Optional[RiskLadder] = None):
         self.farm = farm or AgentFarm()
         self.starting_equity = float(starting_equity)
         self.risk_per_trade = float(risk_per_trade)
@@ -222,6 +271,9 @@ class Backtester:
         self.limit_expiry_minutes = int(limit_expiry_minutes)
         self.bars = int(bars)
         self.exit_policy = exit_policy or EXIT_POLICIES["all_at_target"]
+        # Chapter 27's dynamic sizing. Off by default so the exit-policy
+        # comparison is not confounded by changing position size.
+        self.risk_ladder = risk_ladder
 
     # -- frame preparation -------------------------------------------------
     def _prepare(self, df_1m: pd.DataFrame, timeframes: List[str]) -> Dict[str, pd.DataFrame]:
@@ -306,6 +358,11 @@ class Backtester:
                 closed = self._manage(open_trade, h_arr[i], l_arr[i], now, contract)
                 if closed:
                     equity += open_trade.pnl
+                    if self.risk_ladder is not None:
+                        if open_trade.pnl < 0:
+                            self.risk_ladder.on_loss(open_trade.pnl)
+                        else:
+                            self.risk_ladder.on_win(open_trade.pnl)
                     result.equity_curve.append((now, equity))
                     result.trades.append(open_trade)
                     open_trade = None
@@ -362,7 +419,9 @@ class Backtester:
                 symbol=symbol, now_ts=now, frames=frames,
                 correlated_symbol=correlated_symbol,
                 correlated_frames=self._slice(corr_full, now) if corr_full else {},
-                equity=equity, risk_per_trade=self.risk_per_trade,
+                equity=equity,
+                risk_per_trade=(self.risk_ladder.current_risk
+                                if self.risk_ladder is not None else self.risk_per_trade),
                 config={
                     **cfg,
                     "trades_today": trades_today,
@@ -447,7 +506,7 @@ class Backtester:
                                   contract)
             return True
 
-        # Scale-outs, in order, each only once.
+        # Scale-outs in R, in order, each only once.
         for level_r, fraction in self.exit_policy.scale_outs:
             if any(leg.reason == f"scale_{level_r:g}R" for leg in trade.legs):
                 continue
@@ -464,6 +523,41 @@ class Backtester:
             if trade.remaining_units <= 0:
                 self._finalise(trade, now, contract)
                 return True
+
+        # Scale-outs by progress toward the objective. A progress above 1.0
+        # is an extension beyond the target, which is how chapter 26 keeps
+        # small runners past full gap closure.
+        for progress, fraction in self.exit_policy.scale_outs_by_progress:
+            tag = f"scale_{progress:g}x"
+            if any(leg.reason == tag for leg in trade.legs):
+                continue
+            level = self._price_at_progress(trade, progress)
+            reached = high >= level if trade.direction == "LONG" else low <= level
+            if not reached:
+                continue
+            units = self._scale_units(trade, fraction)
+            if units <= 0:
+                continue
+            self._book_leg(trade, level, units, now, tag, contract)
+            if trade.remaining_units <= 0:
+                self._finalise(trade, now, contract)
+                return True
+
+        # Staged protection tied to progress toward the objective (chapter 22).
+        for progress, reduction in self.exit_policy.stop_ladder:
+            level = self._price_at_progress(trade, progress)
+            reached = high >= level if trade.direction == "LONG" else low <= level
+            if not reached:
+                continue
+            # The reduction is a fraction of the ORIGINAL entry-to-stop
+            # distance, not of whatever the stop has since become.
+            new_stop = self._stop_after_reduction(trade, reduction)
+            if trade.direction == "LONG" and new_stop > trade.stop:
+                trade.stop = new_stop
+                trade.stop_moves += 1
+            elif trade.direction == "SHORT" and new_stop < trade.stop:
+                trade.stop = new_stop
+                trade.stop_moves += 1
 
         # Protective stop moves, applied after any scale-out on the same bar.
         current_r = trade.mfe_r
@@ -486,7 +580,7 @@ class Backtester:
                 trade.stop = trailed
                 trade.stop_moves += 1
 
-        if target_hit:
+        if target_hit and not self._runs_past_target():
             self._close_remaining(trade, trade.target, now, "target", contract)
             return True
 
@@ -499,6 +593,35 @@ class Backtester:
     def _price_at_r(trade: BacktestTrade, r: float) -> float:
         sign = 1.0 if trade.direction == "LONG" else -1.0
         return trade.entry + sign * r * trade.risk_per_unit
+
+    def _runs_past_target(self) -> bool:
+        """Whether this policy deliberately keeps runners beyond the objective.
+
+        Chapter 26's second variant takes the bulk at full closure and leaves
+        small runners for the extension objectives, so reaching the target
+        must not flatten the position. The source is clear about the cost:
+        keeping the final runner can surrender profit against a perfect target
+        exit, and a stopped runner keeps its actual result.
+        """
+        return any(progress > 1.0 for progress, _ in self.exit_policy.scale_outs_by_progress)
+
+    @staticmethod
+    def _price_at_progress(trade: BacktestTrade, progress: float) -> float:
+        """Price at a fraction of the way from entry to the objective."""
+        return trade.entry + float(progress) * (trade.target - trade.entry)
+
+    @staticmethod
+    def _stop_after_reduction(trade: BacktestTrade, reduction: float) -> float:
+        """Protection after removing `reduction` of the ORIGINAL stop distance.
+
+        Chapter 22's arithmetic: entry 100, stop 80, target 180. A quarter of
+        the way (120) removes a quarter of the 20-unit distance, moving the
+        stop to 85. Half way (140) moves it to 90. Three quarters (160) puts
+        it at entry.
+        """
+        sign = 1.0 if trade.direction == "LONG" else -1.0
+        remaining = trade.risk_per_unit * (1.0 - float(reduction))
+        return trade.entry - sign * remaining
 
     @staticmethod
     def _scale_units(trade: BacktestTrade, fraction: float) -> float:

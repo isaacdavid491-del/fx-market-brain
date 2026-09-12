@@ -156,3 +156,62 @@ def net_reward_to_risk(contract: Contract, entry: float, stop: float, target: fl
         "net_win": round(net_win, 2),
         "net_loss": round(net_loss, 2),
     }
+
+
+@dataclass
+class RiskLadder:
+    """Dynamic risk sizing after losses and winning streaks.
+
+    Chapter 27. The older trade plans halve risk after a full planned loss and
+    permit restoration once half that loss is recovered, halving again after a
+    further loss. Model 13's illustrative progression runs 2%, 1%, 0.5%,
+    0.25%, holding at the smallest level until the recovery condition is met.
+    They also prescribe halving after five consecutive wins.
+
+    The book is explicit that these examples do not authorise halving forever
+    or restoring full risk automatically after any winning trade, so the floor
+    and the restoration condition are both set explicitly here rather than
+    left implied.
+    """
+    base_risk: float = 0.02
+    floor_risk: float = 0.0025
+    halve_after_wins: int = 5
+    current_risk: float = 0.0
+    consecutive_wins: int = 0
+    drawdown_to_recover: float = 0.0
+
+    def __post_init__(self) -> None:
+        if not self.current_risk:
+            self.current_risk = self.base_risk
+
+    def on_loss(self, loss_amount: float) -> None:
+        """Halve risk, and remember what must be recovered to restore it."""
+        self.consecutive_wins = 0
+        self.drawdown_to_recover += abs(float(loss_amount))
+        self.current_risk = max(self.current_risk / 2.0, self.floor_risk)
+
+    def on_win(self, win_amount: float) -> None:
+        """Recovering half the outstanding loss restores one step of risk.
+
+        A winning streak reduces risk rather than increasing it; that is a
+        sizing policy in the source, not a claim that a streak makes the next
+        trade more likely to lose.
+        """
+        self.consecutive_wins += 1
+        if self.drawdown_to_recover > 0:
+            self.drawdown_to_recover -= abs(float(win_amount))
+            if self.drawdown_to_recover <= 0:
+                self.drawdown_to_recover = 0.0
+                self.current_risk = min(self.current_risk * 2.0, self.base_risk)
+        if self.halve_after_wins and self.consecutive_wins >= self.halve_after_wins:
+            self.current_risk = max(self.current_risk / 2.0, self.floor_risk)
+            self.consecutive_wins = 0
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {
+            "base_risk": self.base_risk,
+            "current_risk": round(self.current_risk, 5),
+            "floor_risk": self.floor_risk,
+            "consecutive_wins": self.consecutive_wins,
+            "drawdown_to_recover": round(self.drawdown_to_recover, 2),
+        }

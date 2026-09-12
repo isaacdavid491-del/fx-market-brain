@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+import zlib
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Protocol
 
@@ -129,9 +130,13 @@ class SyntheticProvider:
         end = int(to_ts or time.time())
         end -= end % 60
         count = int(count)
-        # Seeded on the symbol and the window so repeated calls agree with
-        # each other and with the backtester.
-        rng = np.random.default_rng(abs(hash((symbol, self.seed))) % (2**32))
+        # Seeded on the symbol so repeated calls agree with each other and
+        # with the backtester. zlib.crc32 rather than the built-in hash():
+        # Python randomises string hashing per process, so hash() made the
+        # series differ between runs and quietly destroyed the comparability
+        # of any two backtests executed as separate processes.
+        seed = (zlib.crc32(symbol.encode("utf-8")) + self.seed) % (2**32)
+        rng = np.random.default_rng(seed)
 
         # Build backwards from `end` so the series never runs past the
         # requested boundary: walking forwards and skipping weekends

@@ -855,3 +855,201 @@ def project_range(low: float, high: float, q: float) -> float:
     180 + 0.5 x 80 = 220. This is a range extension, not a standard deviation.
     """
     return float(low) + float(q) * (float(high) - float(low))
+
+
+# ---------------------------------------------------------------------------
+# Edition 0.6 additions
+# ---------------------------------------------------------------------------
+
+@dataclass
+class RejectionBlock:
+    """The interval between a swing cluster's body reference and its wick extreme.
+
+    Chapter 37 answers a question the sweep language hides: *which boundary is
+    price actually crossing?* For a bearish cluster the interval runs from the
+    highest open-or-close to the highest wick. Price can cross the body
+    reference while the wick extreme stays untouched, and saying only that
+    liquidity was swept conceals which of the two happened.
+
+    More than one candle can supply the cluster, and the candle with the
+    longest wick is not automatically the one with the highest body.
+    """
+    direction: str            # bullish | bearish
+    body_ref: float           # highest open/close (bearish) or lowest (bullish)
+    wick_extreme: float       # highest high (bearish) or lowest low (bullish)
+    body_idx: int             # which candle supplied the body reference
+    wick_idx: int             # which candle supplied the wick extreme
+    body_t: int
+    wick_t: int
+    start_idx: int
+    end_idx: int
+
+    @property
+    def width(self) -> float:
+        return abs(self.wick_extreme - self.body_ref)
+
+    def crossing(self, price: float) -> str:
+        """Which boundary a price crosses: neither, the body, or both."""
+        if self.direction == BEARISH:
+            if price > self.wick_extreme:
+                return "both"
+            return "body" if price > self.body_ref else "neither"
+        if price < self.wick_extreme:
+            return "both"
+        return "body" if price < self.body_ref else "neither"
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {
+            "direction": self.direction,
+            "body_ref": round(self.body_ref, 2),
+            "wick_extreme": round(self.wick_extreme, 2),
+            "width": round(self.width, 2),
+            "body_t": self.body_t, "wick_t": self.wick_t,
+        }
+
+
+def find_rejection_blocks(df: pd.DataFrame, swings: Optional[List[Swing]] = None,
+                          strength: int = 2, cluster: int = 3) -> List[RejectionBlock]:
+    """Rejection blocks around recent swing clusters, newest first.
+
+    The cluster around each swing supplies both endpoints, and the candles
+    that supplied each are recorded separately because they are often not the
+    same candle.
+    """
+    _require(df)
+    n = len(df)
+    if n < 2 * strength + 1:
+        return []
+    swings = swings if swings is not None else find_swings(df, strength)
+    if not swings:
+        return []
+
+    o = df["o"].to_numpy(dtype=float)
+    h = df["h"].to_numpy(dtype=float)
+    low = df["l"].to_numpy(dtype=float)
+    c = df["c"].to_numpy(dtype=float)
+    ts = df["t"].to_numpy(dtype="int64")
+
+    out: List[RejectionBlock] = []
+    for swing in reversed(swings[-12:]):
+        start = max(swing.idx - cluster, 0)
+        end = min(swing.idx + cluster + 1, n)
+        idxs = range(start, end)
+        if swing.kind == "high":
+            body_idx = max(idxs, key=lambda i: max(o[i], c[i]))
+            wick_idx = max(idxs, key=lambda i: h[i])
+            block = RejectionBlock(
+                direction=BEARISH,
+                body_ref=float(max(o[body_idx], c[body_idx])),
+                wick_extreme=float(h[wick_idx]),
+                body_idx=body_idx, wick_idx=wick_idx,
+                body_t=int(ts[body_idx]), wick_t=int(ts[wick_idx]),
+                start_idx=start, end_idx=end - 1,
+            )
+        else:
+            body_idx = min(idxs, key=lambda i: min(o[i], c[i]))
+            wick_idx = min(idxs, key=lambda i: low[i])
+            block = RejectionBlock(
+                direction=BULLISH,
+                body_ref=float(min(o[body_idx], c[body_idx])),
+                wick_extreme=float(low[wick_idx]),
+                body_idx=body_idx, wick_idx=wick_idx,
+                body_t=int(ts[body_idx]), wick_t=int(ts[wick_idx]),
+                start_idx=start, end_idx=end - 1,
+            )
+        if block.width > 0:
+            out.append(block)
+    return out
+
+
+@dataclass
+class VolumeImbalance:
+    """Separation between adjacent candle *bodies*, not traded volume.
+
+    Appendix A is explicit that the name is misleading: this measures the gap
+    between one candle's body endpoint and the next candle's body endpoint,
+    and has nothing to do with volume.
+    """
+    idx: int
+    t: int
+    direction: str
+    top: float
+    bottom: float
+
+    @property
+    def width(self) -> float:
+        return max(self.top - self.bottom, 0.0)
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {"t": self.t, "direction": self.direction,
+                "top": round(self.top, 2), "bottom": round(self.bottom, 2),
+                "width": round(self.width, 2)}
+
+
+def find_volume_imbalances(df: pd.DataFrame, min_width: float = 0.0) -> List[VolumeImbalance]:
+    """Body separations between adjacent candles."""
+    _require(df)
+    n = len(df)
+    if n < 2:
+        return []
+    o = df["o"].to_numpy(dtype=float)
+    c = df["c"].to_numpy(dtype=float)
+    ts = df["t"].to_numpy(dtype="int64")
+
+    out: List[VolumeImbalance] = []
+    for i in range(1, n):
+        prev_top, prev_bottom = max(o[i - 1], c[i - 1]), min(o[i - 1], c[i - 1])
+        cur_top, cur_bottom = max(o[i], c[i]), min(o[i], c[i])
+        if cur_bottom > prev_top and cur_bottom - prev_top > min_width:
+            out.append(VolumeImbalance(i, int(ts[i]), BULLISH,
+                                       top=float(cur_bottom), bottom=float(prev_top)))
+        elif prev_bottom > cur_top and prev_bottom - cur_top > min_width:
+            out.append(VolumeImbalance(i, int(ts[i]), BEARISH,
+                                       top=float(prev_bottom), bottom=float(cur_top)))
+    return out
+
+
+def find_suspension_blocks(df: pd.DataFrame, min_width: float = 0.0) -> List[Dict[str, Any]]:
+    """Candles bounded by body separations at *both* ends.
+
+    Appendix A corrects the narrower earlier definition: a conventional
+    three-candle wick gap is not required, and the neighbouring wick ranges
+    may overlap. One adjacent body separation alone is still insufficient.
+    """
+    _require(df)
+    imbalances = find_volume_imbalances(df, min_width)
+    by_idx = {vi.idx: vi for vi in imbalances}
+    ts = df["t"].to_numpy(dtype="int64")
+
+    out: List[Dict[str, Any]] = []
+    for idx, upper in by_idx.items():
+        lower = by_idx.get(idx + 1)
+        if lower is None:
+            continue
+        out.append({
+            "idx": idx, "t": int(ts[idx]),
+            "upper": upper.as_dict(), "lower": lower.as_dict(),
+            "top": round(max(upper.top, lower.top), 2),
+            "bottom": round(min(upper.bottom, lower.bottom), 2),
+        })
+    return out
+
+
+def breaker_projection(low_a: float, high_b: float, multiple: float = 1.0) -> float:
+    """Project the pre-raid leg beyond its own high.
+
+    Chapter 38 is precise about the anchors: for a bullish breaker, measure
+    from the pre-raid low A to the following high B and project beyond B. The
+    later raid is a separate event and is *excluded* from the measurement.
+    With A at 100 and B at 108 the width is 8 and one width beyond B is 116;
+    using the raid low of 97 instead would give 11 and 119, which is
+    arithmetically valid but does not match the stated anchor rule.
+    """
+    width = float(high_b) - float(low_a)
+    return float(high_b) + multiple * width
+
+
+def breaker_projection_bearish(high_a: float, low_b: float, multiple: float = 1.0) -> float:
+    """The mirror: measure the pre-raid high-to-low leg and project below B."""
+    width = float(high_a) - float(low_b)
+    return float(low_b) - multiple * width

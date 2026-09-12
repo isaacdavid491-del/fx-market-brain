@@ -35,8 +35,14 @@ class Session:
 
 # Ordered most- to least-specific; the first match wins for the primary label.
 SESSIONS: Tuple[Session, ...] = (
+    Session("macro_0950", time(9, 50), time(10, 10), 1.00,
+            "The 09:50-10:10 macro: timing rather than direction."),
     Session("silver_bullet_am", time(10, 0), time(11, 0), 1.00,
             "NY AM Silver Bullet: the highest-conviction one-hour window."),
+    Session("market_on_close", time(15, 50), time(16, 0), 0.70,
+            "Market-on-close macro; the earlier lesson labels 15:45-16:00."),
+    Session("pm_opening_range", time(13, 30), time(14, 0), 0.65,
+            "Afternoon opening range, a distinct reference from the morning."),
     Session("ny_open_killzone", time(9, 30), time(10, 0), 0.95,
             "NY equity open: the day's manipulation leg usually resolves here."),
     Session("ny_am_killzone", time(7, 0), time(9, 30), 0.80,
@@ -49,8 +55,9 @@ SESSIONS: Tuple[Session, ...] = (
             "London Silver Bullet, the 03:00-04:00 window of the 2023 lesson."),
     Session("london_killzone", time(2, 0), time(5, 0), 0.55,
             "London killzone: sets the session high or low NASDAQ later raids."),
-    Session("lunch", time(11, 30), time(13, 0), 0.15,
-            "NY lunch: low participation, avoid initiating."),
+    Session("lunch", time(11, 30), time(13, 30), 0.15,
+            "NY lunch, 11:30-13:30 in the later teaching. Beginners are told "
+            "to avoid it; the conditional lunch retracement is a separate setup."),
     Session("asia", time(20, 0), time(0, 0), 0.25,
             "Asian range: consolidation that frames the London raid."),
 )
@@ -331,3 +338,62 @@ def new_week_opening_gap(df: pd.DataFrame, ts: int) -> Dict[str, Any]:
     out["width"] = round(abs(out["sunday_open"] - out["friday_close"]), 2)
     out["midpoint"] = round((out["sunday_open"] + out["friday_close"]) / 2.0, 2)
     return out
+
+
+# ---------------------------------------------------------------------------
+# Named windows added by edition 0.6
+# ---------------------------------------------------------------------------
+# These are scoped to the lessons that define them. Chapter 41's rule applies:
+# a later explanation of the same decision governs, and windows from different
+# lessons stay separate rather than being merged into one clock.
+
+VENOM_START, VENOM_END = time(8, 0), time(9, 30)
+MODEL13_AM_START, MODEL13_AM_END = time(8, 30), time(11, 0)
+OVERNIGHT_START, OVERNIGHT_END = time(0, 0), time(7, 0)
+NOON_HOUR_START, NOON_HOUR_END = time(12, 0), time(13, 0)
+
+# Times of day the Model 13 lesson names as opportunities to look for the
+# model. They are checkpoints, not instructions to trade at each one.
+MODEL13_CHECKPOINTS = (
+    time(8, 30), time(9, 30), time(10, 0), time(10, 30),
+    time(13, 30), time(14, 0), time(14, 30), time(15, 0), time(15, 30),
+)
+
+
+def venom_range(df: pd.DataFrame, ts: int) -> NamedRange:
+    """The 08:00-09:30 New York window of the April 2025 Venom tutorial.
+
+    A specific ninety-minute construction belonging to that lesson, not a
+    claim about repeating ninety-minute cycles through the day, and a
+    different measurement from the 07:00-09:00 premarket range.
+    """
+    return named_range(df, ts, "venom_0800_0930", VENOM_START, VENOM_END)
+
+
+def overnight_range(df: pd.DataFrame, ts: int) -> NamedRange:
+    """Midnight to 07:00 New York, the convenient overnight measurement of the
+    vision-to-execution lesson."""
+    return named_range(df, ts, "overnight", OVERNIGHT_START, OVERNIGHT_END)
+
+
+def noon_hour_range(df: pd.DataFrame, ts: int) -> NamedRange:
+    """Noon to 13:00, the Model 13 afternoon reference selection window.
+
+    Not the same thing as the broader lunch period in the later teaching.
+    """
+    return named_range(df, ts, "noon_hour", NOON_HOUR_START, NOON_HOUR_END)
+
+
+def last_hour_range(df: pd.DataFrame, ts: int) -> NamedRange:
+    """The developing last-hour range, available by 15:50."""
+    return named_range(df, ts, "last_hour", time(15, 0), time(16, 0))
+
+
+def at_checkpoint(ts: int, tolerance_minutes: int = 5) -> Optional[str]:
+    """Whether `ts` falls on one of the Model 13 checkpoints."""
+    local = to_ny(ts)
+    minutes = local.hour * 60 + local.minute
+    for check in MODEL13_CHECKPOINTS:
+        if abs(minutes - (check.hour * 60 + check.minute)) <= tolerance_minutes:
+            return check.strftime("%H:%M")
+    return None

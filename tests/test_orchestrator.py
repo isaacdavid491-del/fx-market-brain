@@ -182,7 +182,7 @@ def test_decision_serialises_completely(synthetic_1m):
     out = decision.as_dict()
     assert set(out) >= {"symbol", "action", "net_score", "agreement", "conviction",
                         "plan", "narrative", "vetoes", "agents"}
-    assert len(out["agents"]) == 17
+    assert len(out["agents"]) == 21
     assert all("rationale" in a for a in out["agents"])
     import json
     json.dumps(out)   # must be JSON-serialisable for the API
@@ -190,7 +190,7 @@ def test_decision_serialises_completely(synthetic_1m):
 
 def test_roster_is_exposed():
     roster = AgentFarm().roster()
-    assert len(roster) == 17
+    assert len(roster) == 21
     names = {a["name"] for a in roster}
     assert {"htf_bias", "liquidity_sweep", "killzone", "risk_manager"} <= names
 

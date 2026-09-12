@@ -1,7 +1,14 @@
 # What the study book taught the agents
 
-Source: *ICT Advanced Day Trading — an illustrated study of his public
-execution methods*, independent research edition, 10 September 2026.
+Sources: *ICT Advanced Day Trading — an illustrated study of his public
+execution methods*, independent research editions 0.2 and 0.6, 10 September
+2026. Edition 0.6 adds nineteen chapters; its additions are marked below.
+
+Chapter 41 of edition 0.6 sets the precedence rule this repository follows:
+the most recent explicit explanation of the same decision governs, earlier
+teaching supplies missing background rather than silently replacing a later
+refinement, and windows from different lessons stay separate instead of being
+merged into one clock.
 
 The book is a research reconstruction, not a rulebook. It repeatedly marks
 which conditions its sources actually specify and which remain unresolved.
@@ -369,3 +376,142 @@ mechanical rather than statistical, the whole-contract constraint means a
 one-contract position cannot be scaled at all, and any future comparison of
 exit policies must be paired on matched trades rather than read off aggregate
 totals.
+
+
+---
+
+# Edition 0.6 additions
+
+## Ch. 22 — Staged protection tied to progress
+
+The headline new management rule, and the reason it matters here is that the
+book contrasts it directly with the policy tested in the previous round:
+
+> reduce protection by twenty-five percent at quarter progress toward the
+> expected objective and by fifty percent at half progress; at three-quarter
+> progress require breakeven … This model permits some open risk while banking
+> partials; it is different from moving every trade to breakeven at one times
+> risk.
+
+The arithmetic is exact and is a test. Entry 100, stop 80, target 180: at 120
+the stop moves to 85, at 140 to 90, at 160 to entry. The reduction is always a
+fraction of the **original** entry-to-stop distance, and progress is measured
+from entry to the chosen objective.
+
+Implemented as `ExitPolicy.stop_ladder`, with `progressive_stop` and
+`progressive_stop_half_at_1R` in the policy roster.
+
+## Ch. 23 — Model 13 search windows
+
+An index-futures morning search window of 08:30-11:00 New York, with
+checkpoints at 08:30, 09:30, 10:00 and 10:30, and afternoon checkpoints from
+13:30 through 15:30. The source is explicit that these are opportunities to
+look for the model, not instructions to trade at each one, so `CheckpointAgent`
+takes no direction at all and only nudges conviction.
+
+For the afternoon it prefers morning equal highs or lows where present,
+otherwise the extremes of the noon-to-13:00 hour, which is that lesson's
+reference window and not the broader lunch period.
+
+## Ch. 24 — Venom and the paired signature
+
+The April 2025 tutorial marks the high and low formed from 08:00 through 09:30
+New York. That is a specific ninety-minute construction belonging to that
+lesson, kept separate from the 07:00-09:00 premarket range of the 2026
+material.
+
+The bearish signature is a candle **closing** above the raided high pool, with
+inefficient delivery into the area and an inefficient departure away from it.
+The paired arrival and departure is the identifying feature; a brief wick above
+a high does not recover the description. `VenomAgent` requires the close and
+reports the wick-only case as a non-signal.
+
+The lesson also names three participation times — anticipatory, reactive and
+deferred — which cannot all be credited with the best entry price.
+
+## Ch. 26 — Two opening-gap exit ladders
+
+The source describes two variants **in the same lesson** and warns that
+combining them into one mandatory allocation would misstate it, so both are
+implemented and labelled separately:
+
+| Policy | Allocation |
+|---|---|
+| `gap_bulk_at_half` | 75-80% off at the half-gap objective |
+| `gap_ladder` | 2 units at half gap, 7 at full closure, 3 runners at extensions |
+
+The twelve-unit illustration of the second is the book's own arithmetic
+choice, not reported fills. Extensions sit at 0.2, 0.5 and 1.0 gap widths
+beyond, which the engine expresses as progress values above 1.0. A policy with
+extension rungs deliberately does **not** flatten at the target, and the source
+is clear about the cost: keeping the final runner can surrender profit against
+a perfect target exit, and a stopped runner keeps its actual result.
+
+## Ch. 27 — The risk ladder
+
+Halve risk after a full planned loss, restore it once half that loss is
+recovered, halve again after a further loss; Model 13's illustrative
+progression runs 2%, 1%, 0.5%, 0.25%. Also halve after five consecutive wins,
+which is a sizing policy and not a claim that a streak predicts a loss.
+
+`RiskLadder` implements this with an explicit floor and an explicit recovery
+condition, because the book states plainly that the examples do not authorise
+halving forever or restoring full risk automatically after any winning trade.
+It is off by default so it cannot confound an exit-policy comparison.
+
+## Ch. 37 — Rejection blocks and the body reference
+
+The chapter answers a question the sweep language hides: *which boundary is
+price actually crossing?* A bearish rejection block runs from a swing
+cluster's highest open-or-close to its highest wick. With a body reference of
+108 and a wick high of 110, a return to 109 crosses the body without crossing
+the wick, and "liquidity was swept" would conceal which happened.
+
+`RejectionBlockAgent` reports the crossing as `body`, `both` or `neither`. The
+candle with the longest wick is not automatically the one with the highest
+body, and the two are recorded separately.
+
+## Ch. 38 — Breaker projection anchors
+
+For a bullish breaker, measure the pre-raid low A to the following high B and
+project beyond B. The later raid is **excluded** from the measurement. With A
+at 100 and B at 108 the width is 8 and one width beyond B is 116; using the
+raid low of 97 gives 119, which is arithmetically valid against the wrong
+anchor. Both are asserted in tests so the anchor rule cannot drift.
+
+## Appendix A — Corrected suspension block
+
+Edition 0.6 corrects the narrower definition used earlier: a suspension block
+is a candle bounded by body separations at both ends, and a conventional
+three-candle wick gap is **not** required — neighbouring wick ranges may
+overlap. One adjacent body separation alone is still insufficient.
+
+A volume imbalance is the separation between adjacent candle bodies and has
+nothing to do with traded volume, which `VolumeImbalanceAgent` says in its own
+evidence to stop the name misleading a reader.
+
+## New session windows
+
+| Window | New York time | Source |
+|---|---|---|
+| `macro_0950` | 09:50-10:10 | ch. 28, 43 |
+| `pm_opening_range` | 13:30-14:00 | ch. 24, 31 |
+| `market_on_close` | 15:50-16:00 | ch. 32 |
+| `venom_0800_0930` | 08:00-09:30 | ch. 24 |
+| `overnight` | 00:00-07:00 | ch. 28 |
+| `noon_hour` | 12:00-13:00 | ch. 23 |
+
+Lunch was widened from 11:30-13:00 to 11:30-13:30 to match the later teaching.
+The market-on-close window keeps both labels in the docs: the earlier lesson
+says 15:45-16:00 and the later one 15:50-16:00, and the material does not
+establish whether the latter supersedes the former or names a narrower core
+inside it.
+
+## Still not implemented
+
+| Teaching | Why |
+|---|---|
+| Model 13 stop placement | The chapter records a material conflict: the wording says the first candle's low, the verbal explanation selects its high. Different risk, unresolved. |
+| Enigma | Presented as a personal approach; the lecture does not release the algorithm and the book refuses to publish a formula. |
+| Lunch retracement entry | Its prerequisites are specific and conditional, and the book is explicit it "is not a rule to buy every down morning at noon". |
+| The 70% opening-gap and 90% gap-revisit figures | Both are described as claims to measure, not established results. |

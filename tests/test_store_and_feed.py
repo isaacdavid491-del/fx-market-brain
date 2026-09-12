@@ -83,6 +83,29 @@ def test_resample_of_empty_frame_keeps_the_schema():
     assert out.empty
 
 
+def test_synthetic_provider_is_deterministic_across_processes():
+    """Regression: the seed was derived from Python's built-in hash(), which
+    is randomised per process. Two backtests run as separate processes then
+    received different data, so their results were never comparable."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    code = (
+        "from backend.data.providers import SyntheticProvider;"
+        "d=SyntheticProvider().fetch_1m('NAS100_USD',count=50,to_ts=1717200000);"
+        "print(round(float(d.c.iloc[-1]),6))"
+    )
+    root = Path(__file__).resolve().parent.parent
+    runs = {
+        subprocess.run([sys.executable, "-c", code], capture_output=True,
+                       text=True, cwd=root).stdout.strip()
+        for _ in range(3)
+    }
+    assert len(runs) == 1, f"synthetic feed differs between processes: {runs}"
+    assert runs != {""}, "subprocess produced no output"
+
+
 def test_synthetic_provider_is_deterministic():
     a = SyntheticProvider().fetch_1m("NAS100_USD", count=500, to_ts=1_717_200_000)
     b = SyntheticProvider().fetch_1m("NAS100_USD", count=500, to_ts=1_717_200_000)

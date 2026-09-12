@@ -45,7 +45,7 @@ def test_ict_health(client, seeded):
 
 def test_agents_endpoint_lists_the_roster(client):
     body = client.get("/api/ict/agents").json()
-    assert body["count"] == 17
+    assert body["count"] == 21
     names = {a["name"] for a in body["agents"]}
     assert "liquidity_sweep" in names and "risk_manager" in names
 
@@ -62,7 +62,7 @@ def test_decision_endpoint_returns_every_agent(client, seeded):
     assert res.status_code == 200
     body = res.json()
     assert body["action"] in ("LONG", "SHORT", "STAND_ASIDE")
-    assert len(body["agents"]) == 17
+    assert len(body["agents"]) == 21
     assert all("rationale" in a and "contribution" in a for a in body["agents"])
     assert "disclaimer" in body
 
