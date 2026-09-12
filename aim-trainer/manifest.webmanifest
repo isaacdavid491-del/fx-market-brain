@@ -1,0 +1,15 @@
+{
+  "name": "Thumb Aim Trainer",
+  "short_name": "AimTrainer",
+  "description": "Touchscreen shooter aim drills: flicks, tracking, target switching and recoil control.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "fullscreen",
+  "orientation": "any",
+  "background_color": "#0d1117",
+  "theme_color": "#0d1117",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}

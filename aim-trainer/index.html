@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no, maximum-scale=1">
+<meta name="theme-color" content="#0d1117">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Thumb Aim Trainer</title>
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon.svg">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<!-- ============ MENU ============ -->
+<section id="screen-menu" class="screen active">
+  <header class="masthead">
+    <h1>Thumb Aim<span>Trainer</span></h1>
+    <p class="tagline">Touchscreen shooter drills. No game hooks, no overlay, nothing to detect.</p>
+  </header>
+
+  <nav class="tabs" role="tablist">
+    <button class="tab active" data-tab="drills" role="tab">Drills</button>
+    <button class="tab" data-tab="settings" role="tab">Setup</button>
+    <button class="tab" data-tab="stats" role="tab">Progress</button>
+  </nav>
+
+  <div class="tabpanel active" data-panel="drills">
+    <div id="drill-list" class="drill-list"></div>
+  </div>
+
+  <div class="tabpanel" data-panel="settings">
+    <div class="card">
+      <h2>Look sensitivity</h2>
+      <p class="hint">How far the view swings per millimetre of thumb travel. Set this so a full comfortable swipe turns you about 90&deg;, then leave it alone for a week.</p>
+      <div class="slider-row">
+        <input type="range" id="set-sens" min="0.3" max="3" step="0.05" value="1">
+        <output id="out-sens">1.00</output>
+      </div>
+      <div class="chip-row" id="sens-presets">
+        <button class="chip" data-sens="0.6">0.60</button>
+        <button class="chip" data-sens="0.8">0.80</button>
+        <button class="chip" data-sens="1">1.00</button>
+        <button class="chip" data-sens="1.4">1.40</button>
+        <button class="chip" data-sens="1.8">1.80</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Aim-down-sights multiplier</h2>
+      <p class="hint">Applied on top of look sensitivity during scoped drills.</p>
+      <div class="slider-row">
+        <input type="range" id="set-ads" min="0.3" max="1.5" step="0.05" value="0.7">
+        <output id="out-ads">0.70</output>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Controls</h2>
+      <label class="row-toggle">
+        <span>Fire button side</span>
+        <select id="set-hand">
+          <option value="right">Right</option>
+          <option value="left">Left</option>
+        </select>
+      </label>
+      <label class="row-toggle">
+        <span>Invert vertical look</span>
+        <input type="checkbox" id="set-invert">
+      </label>
+      <label class="row-toggle">
+        <span>Tap look area to fire</span>
+        <input type="checkbox" id="set-taptofire" checked>
+      </label>
+      <label class="row-toggle">
+        <span>Haptics on hit</span>
+        <input type="checkbox" id="set-haptics" checked>
+      </label>
+      <label class="row-toggle">
+        <span>Target size</span>
+        <select id="set-size">
+          <option value="1.35">Large</option>
+          <option value="1" selected>Standard</option>
+          <option value="0.72">Small</option>
+        </select>
+      </label>
+    </div>
+  </div>
+
+  <div class="tabpanel" data-panel="stats">
+    <div id="stats-body"></div>
+  </div>
+
+  <footer class="foot">Practice app only. It never reads, touches, or talks to any game.</footer>
+</section>
+
+<!-- ============ BRIEF ============ -->
+<section id="screen-brief" class="screen">
+  <div class="brief-wrap">
+    <button class="back" id="brief-back">&larr; Drills</button>
+    <h2 id="brief-name">Drill</h2>
+    <p id="brief-desc" class="brief-desc"></p>
+    <div class="card">
+      <h3>What it trains</h3>
+      <p id="brief-trains" class="hint"></p>
+    </div>
+    <div class="card">
+      <h3>How to play</h3>
+      <ul id="brief-how" class="how"></ul>
+    </div>
+    <div class="brief-meta">
+      <div><span class="k">Length</span><span class="v" id="brief-len">60s</span></div>
+      <div><span class="k">Sensitivity</span><span class="v" id="brief-sens">1.00</span></div>
+      <div><span class="k">Your best</span><span class="v" id="brief-best">&mdash;</span></div>
+    </div>
+    <button class="primary big" id="brief-start">Start drill</button>
+  </div>
+</section>
+
+<!-- ============ GAME ============ -->
+<section id="screen-game" class="screen">
+  <div id="stage" class="stage">
+    <canvas id="canvas"></canvas>
+    <div class="hud">
+      <div class="hud-left">
+        <span id="hud-timer" class="hud-timer">60.0</span>
+        <span id="hud-sub" class="hud-sub"></span>
+      </div>
+      <button id="hud-quit" class="hud-quit" aria-label="Quit drill">&times;</button>
+    </div>
+    <div id="countdown" class="countdown"></div>
+    <button id="fire" class="fire-btn" aria-label="Fire">FIRE</button>
+  </div>
+</section>
+
+<!-- ============ RESULTS ============ -->
+<section id="screen-result" class="screen">
+  <div class="result-wrap">
+    <h2 id="res-title">Drill complete</h2>
+    <div class="score-hero">
+      <div id="res-primary" class="score-num">0</div>
+      <div id="res-primary-label" class="score-label">score</div>
+      <div id="res-verdict" class="verdict"></div>
+    </div>
+    <div id="res-metrics" class="metric-grid"></div>
+    <div id="res-coach" class="card coach"></div>
+    <div class="result-actions">
+      <button class="primary" id="res-again">Run it again</button>
+      <button class="ghost" id="res-menu">Back to drills</button>
+    </div>
+  </div>
+</section>
+
+<script src="js/stats.js"></script>
+<script src="js/drills.js"></script>
+<script src="js/engine.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
