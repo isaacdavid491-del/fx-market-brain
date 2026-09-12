@@ -111,7 +111,7 @@ def cmd_backtest(args: argparse.Namespace) -> int:
 
 def cmd_validate(args: argparse.Namespace) -> int:
     """Run the real-data validation and print a report."""
-    from backend.validate import format_report, run
+    from backend.validate import format_report, is_valid_run, run
 
     report = run(symbol=args.symbol, days=args.days, step_minutes=args.step,
                  equity=args.equity or 100_000.0, contract=args.contract,
@@ -121,8 +121,9 @@ def cmd_validate(args: argparse.Namespace) -> int:
         print(json.dumps(report, indent=2))
     else:
         print(format_report(report))
-    # A synthetic run is not a validation, and the exit code says so.
-    return 0 if report.get("data_is_real") else 2
+    # Only a run that actually replayed real bars counts as a validation, and
+    # the exit code says so. Synthetic data or no data both fail.
+    return 0 if is_valid_run(report) else 2
 
 
 def cmd_seed(args: argparse.Namespace) -> int:

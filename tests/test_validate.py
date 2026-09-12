@@ -6,7 +6,9 @@ a real one, so that is what most of these tests check.
 import numpy as np
 import pytest
 
-from backend.validate import format_report, paired_difference, power_note, run
+from backend.validate import (
+    format_report, is_valid_run, paired_difference, power_note, run,
+)
 
 
 def test_paired_difference_arithmetic():
@@ -40,17 +42,41 @@ def test_power_note_scales_with_sample_size():
 
 
 def test_report_banner_marks_synthetic_data_loudly():
-    report = {"symbol": "NAS100_USD", "provider": "synthetic", "data_is_real": False,
+    report = {"symbol": "NAS100_USD", "provider": "synthetic", "status": "synthetic",
               "policies": {}, "comparisons": {}, "warnings": ["SYNTHETIC DATA: ..."]}
     text = format_report(report)
     assert "NOT A TEST OF THE STRATEGY" in text
     assert "SYNTHETIC" in text
+    assert is_valid_run(report) is False
 
 
 def test_report_banner_marks_real_data():
-    report = {"symbol": "NAS100_USD", "provider": "oanda", "data_is_real": True,
+    report = {"symbol": "NAS100_USD", "provider": "oanda", "status": "real",
               "policies": {}, "comparisons": {}, "warnings": []}
     assert "REAL MARKET DATA" in format_report(report)
+    assert is_valid_run(report) is True
+
+
+def test_a_token_without_data_is_not_a_real_run():
+    """Regression: the banner was derived from the provider name, so setting a
+    token and fetching nothing printed REAL MARKET DATA over zero bars and
+    exited zero. Reaching the broker is not the same as receiving data."""
+    report = {"symbol": "NAS100_USD", "provider": "oanda", "status": "no_data",
+              "bars_available": 0, "policies": {}, "comparisons": {},
+              "warnings": ["seeding failed: 403"]}
+    text = format_report(report)
+    assert "NOTHING WAS TESTED" in text
+    assert "REAL MARKET DATA" not in text
+    assert is_valid_run(report) is False
+
+
+def test_an_unknown_status_is_never_treated_as_valid():
+    assert is_valid_run({"status": "unknown"}) is False
+    assert is_valid_run({}) is False
+    assert "NOTHING WAS TESTED" in format_report(
+        {"symbol": "X", "provider": "oanda", "policies": {}, "comparisons": {},
+         "warnings": []}
+    )
 
 
 def test_report_always_states_what_is_not_modelled():
@@ -68,7 +94,7 @@ def test_validate_runs_on_a_fresh_database(tmp_path, monkeypatch):
     monkeypatch.setenv("DATA_PROVIDER", "synthetic")
     report = run(symbol="NAS100_USD", days=2, step_minutes=60, do_seed=False)
     assert "warnings" in report
-    assert report["data_is_real"] is False
+    assert is_valid_run(report) is False
 
 
 def test_validate_flags_thin_history(tmp_path, monkeypatch):
@@ -78,3 +104,5 @@ def test_validate_flags_thin_history(tmp_path, monkeypatch):
     report = run(symbol="NOTHING_HERE", days=2, step_minutes=60, do_seed=False)
     assert any("seed more history" in w for w in report["warnings"])
     assert report["policies"] == {}
+    assert report["status"] == "no_data"
+    assert is_valid_run(report) is False

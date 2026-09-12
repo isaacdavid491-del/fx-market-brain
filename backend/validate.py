@@ -108,7 +108,13 @@ def run(symbol: Optional[str] = None, days: int = 60, step_minutes: int = 5,
     report: Dict[str, Any] = {
         "symbol": symbol,
         "provider": provider.name,
-        "data_is_real": is_real,
+        # `status` is decided at the end, from what actually arrived. Setting a
+        # token is not evidence of data: an earlier version of this function
+        # derived "real" from the provider name alone and cheerfully printed
+        # REAL MARKET DATA over zero bars, which is the one mistake the whole
+        # command exists to prevent.
+        "status": "unknown",
+        "data_is_real": False,
         "days_requested": days,
         "policies": {},
         "comparisons": {},
@@ -135,11 +141,16 @@ def run(symbol: Optional[str] = None, days: int = 60, step_minutes: int = 5,
     report["latest_ts"] = latest_ts(symbol)
 
     if len(df) < 5000:
+        report["status"] = "no_data"
         report["warnings"].append(
             f"only {len(df)} one-minute bars available; seed more history before "
             "drawing any conclusion"
         )
         return report
+
+    # Real bars actually reached the backtester, so the result means something.
+    report["status"] = "real" if is_real else "synthetic"
+    report["data_is_real"] = is_real
 
     peer = None
     if correlated_symbol:
@@ -186,11 +197,23 @@ def run(symbol: Optional[str] = None, days: int = 60, step_minutes: int = 5,
     return report
 
 
+BANNERS = {
+    "real": "REAL MARKET DATA",
+    "synthetic": "SYNTHETIC DATA - NOT A TEST OF THE STRATEGY",
+    "no_data": "NO USABLE DATA - NOTHING WAS TESTED",
+    "unknown": "NO USABLE DATA - NOTHING WAS TESTED",
+}
+
+
+def is_valid_run(report: Dict[str, Any]) -> bool:
+    """True only when real bars were actually replayed."""
+    return report.get("status") == "real"
+
+
 def format_report(report: Dict[str, Any]) -> str:
     lines: List[str] = []
-    real = report.get("data_is_real")
-    banner = ("REAL MARKET DATA" if real else
-              "SYNTHETIC DATA - NOT A TEST OF THE STRATEGY")
+    status = report.get("status", "unknown")
+    banner = BANNERS.get(status, BANNERS["unknown"])
     lines.append("=" * 78)
     lines.append(f"  {banner}")
     lines.append("=" * 78)
