@@ -4,11 +4,46 @@ Everything measured so far used a made-up random walk. It cannot tell you
 whether the strategy works. To get a real answer the code needs real NASDAQ
 bars, which means an OANDA token and a machine that can reach OANDA.
 
-There are two ways. The first needs nothing installed.
+There are three ways. The first needs nothing installed and nothing running
+on your side at all.
 
 ---
 
-## Option A: use your Render deployment (no install)
+## Option A: GitHub Actions (recommended, nothing installed)
+
+GitHub's runners have the open internet access this project's sandbox does
+not, so the whole test runs there and the result comes back in the browser.
+
+**1. Get an OANDA practice token.** Sign up for a free practice (demo) account
+at <https://www.oanda.com>, then find *Manage API Access* and generate one. No
+real money is involved.
+
+**2. Store it as a repository secret.**
+
+- Open the repository on GitHub.
+- **Settings** -> **Secrets and variables** -> **Actions**.
+- **New repository secret**. Name it exactly `OANDA_TOKEN`, paste the value,
+  click **Add secret**.
+
+GitHub encrypts it and the workflow never prints it.
+
+**3. Run it.**
+
+- Go to the **Actions** tab.
+- Pick **Validate against real market data** in the left sidebar.
+- Click **Run workflow**, leave the defaults, click the green button.
+
+**4. Read it.** The run takes twenty to forty minutes. Open the run and the
+report appears in the summary at the top of the page. The full text and a JSON
+copy are attached under **Artifacts**.
+
+A **green tick means real bars were actually measured**. The job deliberately
+fails if the data was synthetic or missing, so a red cross means the result is
+not a measurement of anything.
+
+---
+
+## Option B: use your Render deployment (no install)
 
 This repository already deploys to Render, and the deployed service can fetch
 its own data.
@@ -62,7 +97,7 @@ Copy the whole `text` field and paste it back into the chat.
 
 ---
 
-## Option B: run it on your own computer
+## Option C: run it on your own computer
 
 More setup, but faster and more reliable.
 

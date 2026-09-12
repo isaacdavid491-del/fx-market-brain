@@ -1,0 +1,93 @@
+name: Validate against real market data
+
+# Runs the agent farm against real NASDAQ history on a GitHub runner, which
+# has the outbound network access that a sandboxed session does not.
+#
+# Setup, once:
+#   Settings -> Secrets and variables -> Actions -> New repository secret
+#   Name: OANDA_TOKEN     Value: your OANDA practice token
+#
+# Then: Actions -> "Validate against real market data" -> Run workflow.
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "Days of history to test (60 is a reasonable start)"
+        required: false
+        default: "60"
+      step_minutes:
+        description: "Minutes between decisions (5 is thorough, 15 is ~3x faster)"
+        required: false
+        default: "15"
+      practice:
+        description: "Use the practice API (set false only for a live token)"
+        required: false
+        default: "true"
+        type: choice
+        options: ["true", "false"]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run the test suite first
+        # If the code is unhealthy, a data result would be meaningless.
+        run: python -m pytest -q
+
+      - name: Check the token is present
+        env:
+          OANDA_TOKEN: ${{ secrets.OANDA_TOKEN }}
+        run: |
+          if [ -z "$OANDA_TOKEN" ]; then
+            echo "::error::OANDA_TOKEN secret is not set. Add it under"
+            echo "::error::Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+          echo "Token is present (${#OANDA_TOKEN} characters). Its value is never printed."
+
+      - name: Validate against real history
+        env:
+          OANDA_TOKEN: ${{ secrets.OANDA_TOKEN }}
+          OANDA_API_BASE: ${{ inputs.practice == 'false' && 'https://api-fxtrade.oanda.com/v3' || 'https://api-fxpractice.oanda.com/v3' }}
+          DB_PATH: ${{ github.workspace }}/validation.db
+        run: |
+          set -o pipefail
+          python -m backend.cli validate \
+            --days "${{ inputs.days }}" \
+            --step "${{ inputs.step_minutes }}" \
+            --report-json validation-report.json \
+            | tee validation-report.txt
+        # The command exits non-zero unless real bars were actually replayed,
+        # so a green job means a genuine measurement and nothing else does.
+
+      - name: Put the report in the job summary
+        if: always()
+        run: |
+          {
+            echo '## Validation report'
+            echo '```'
+            cat validation-report.txt 2>/dev/null || echo 'no report produced'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: validation-report
+          path: |
+            validation-report.txt
+            validation-report.json
+          retention-days: 30

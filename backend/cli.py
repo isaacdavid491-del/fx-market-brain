@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import pathlib
 import sys
 from typing import Any, Dict
 
@@ -117,6 +118,12 @@ def cmd_validate(args: argparse.Namespace) -> int:
                  equity=args.equity or 100_000.0, contract=args.contract,
                  require_killzone=not args.ignore_killzone,
                  do_seed=not args.no_seed)
+    if args.report_json:
+        # Written alongside the human report so a long run never has to be
+        # repeated just to change output format.
+        pathlib.Path(args.report_json).write_text(
+            json.dumps(report, indent=2), encoding="utf-8"
+        )
     if args.json:
         print(json.dumps(report, indent=2))
     else:
@@ -180,6 +187,8 @@ def build_parser() -> argparse.ArgumentParser:
     validate.add_argument("--no-seed", action="store_true",
                           help="use stored history instead of downloading")
     validate.add_argument("--json", action="store_true")
+    validate.add_argument("--report-json", dest="report_json", metavar="PATH",
+                          help="also write the full report as JSON to this path")
     validate.set_defaults(func=cmd_validate)
 
     agents = sub.add_parser("agents", help="list the roster")
