@@ -4,9 +4,10 @@ Two market models behind one FastAPI service:
 
 - **FX signal model** — a gradient-boosted classifier over multi-timeframe
   features for a currency pair. Served at `/` and `/api/signal`.
-- **NASDAQ ICT agent farm** — eleven specialist agents that read NASDAQ price
-  action through the ICT (Inner Circle Trader) lens and argue their way to a
-  single trade plan. Served at `/ict` and `/api/ict/*`.
+- **NASDAQ ICT agent farm** — seventeen specialist agents that read NASDAQ
+  price action through the ICT (Inner Circle Trader) lens and argue their way
+  to a single trade plan, priced in a real contract with costs. Served at
+  `/ict` and `/api/ict/*`.
 
 Both read the same 1-minute candle store, so their timeframes always agree.
 
@@ -18,7 +19,7 @@ Both read the same 1-minute candle store, so their timeframes always agree.
 
 ```bash
 pip install -r requirements-dev.txt
-python -m pytest                       # 89 tests
+python -m pytest                       # 129 tests
 uvicorn backend.app:app --reload       # open http://localhost:8000/ict
 ```
 
@@ -27,7 +28,7 @@ feed so everything is explorable offline. Every response says which provider
 produced it.
 
 ```bash
-python -m backend.cli agents           # list the eleven agents
+python -m backend.cli agents           # list the seventeen agents
 python -m backend.cli decide           # run the farm now, with full reasoning
 python -m backend.cli backtest --days 14
 python -m backend.cli seed --days 30   # download real history (needs a token)
@@ -35,18 +36,25 @@ python -m backend.cli seed --days 30   # download real history (needs a token)
 
 ## The agent farm in one paragraph
 
-Nine analysts each answer one question — where is higher-timeframe structure
-pointing, did structure just break or change character, were stops just raided
-and rejected, which liquidity pool is price drawn to, is there an unfilled
-imbalance or an unmitigated order block nearby, is price at a premium or a
-discount, where are we in the daily accumulation-manipulation-distribution
-cycle, and does the S&P confirm this high or low. Their votes are weighted and
-normalised. A killzone agent then scales the result by how good the trading
-window is, and a risk agent can veto outright. A trade is only planned when
-conviction, agreement and reward-to-risk all clear their thresholds, which
-works out to roughly one or two setups a day.
+Fifteen analysts each answer one question — where higher-timeframe structure
+points, whether structure just broke or changed character, whether stops were
+just raided and rejected, which liquidity pool price is drawn to, whether
+there is an unfilled imbalance, an unmitigated order block or a gap that has
+failed on a close, where price sits in the frozen premarket and opening
+ranges, whether delivery is meeting resistance, and whether the S&P confirms
+this high or low. Their votes form a confidence-weighted mean, so an agent
+that abstains neither argues for a trade nor against one. A killzone agent
+then scales the result by how good the trading window is, and a risk agent can
+veto outright. A trade is only planned when conviction, participation,
+agreement and *net* reward-to-risk all clear their thresholds.
 
-Full documentation: **[docs/ict-agent-farm.md](docs/ict-agent-farm.md)**.
+Every plan is priced in a real contract: levels snapped to 0.25-point
+increments, whole-contract sizing, commission and adverse-execution costs
+charged, and the break-even hit rate reported alongside the gross ratio.
+
+Documentation: **[docs/ict-agent-farm.md](docs/ict-agent-farm.md)** for the
+system, **[docs/book-teachings.md](docs/book-teachings.md)** for how an
+advanced ICT study book's rules map onto the code.
 
 ## Endpoints
 
@@ -69,13 +77,14 @@ header to match `ADMIN_KEY`.
 backend/
   store.py             SQLite candle store and timeframe resampling
   app.py               FastAPI app: FX model plus route registration
-  ict/                 ICT primitives and New York session windows
-  agents/              the eleven agents and the orchestrator
+  ict/                 ICT primitives, session windows, contract specs
+  agents/              the seventeen agents and the orchestrator
   data/                OANDA and synthetic providers, context assembly
   backtest/            walk-forward engine and metrics
   service.py, api_ict.py, cli.py
-tests/                 89 tests
+tests/                 129 tests
 docs/ict-agent-farm.md
+docs/book-teachings.md
 ```
 
 ## Configuration

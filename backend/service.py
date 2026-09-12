@@ -61,6 +61,11 @@ def farm_config() -> Dict[str, Any]:
         "max_trades_per_day": env_int("ICT_MAX_TRADES_PER_DAY", DEFAULT_CONFIG["max_trades_per_day"]),
         "daily_loss_limit_pct": env_float("ICT_DAILY_LOSS_LIMIT", DEFAULT_CONFIG["daily_loss_limit_pct"]),
         "contract_value": env_float("ICT_CONTRACT_VALUE", DEFAULT_CONFIG["contract_value"]),
+        # Execution settings from the study's contract arithmetic.
+        "contract": os.getenv("ICT_CONTRACT", DEFAULT_CONFIG["contract"]),
+        "min_participation": env_float("ICT_MIN_PARTICIPATION",
+                                       DEFAULT_CONFIG["min_participation"]),
+        "include_costs": env_bool("ICT_INCLUDE_COSTS", DEFAULT_CONFIG["include_costs"]),
     }
 
 

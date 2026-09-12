@@ -572,3 +572,286 @@ def ote_zone(rng: DealingRange, direction: str) -> Tuple[float, float]:
     if direction == BULLISH:
         return (rng.high - 0.79 * span, rng.high - 0.62 * span)
     return (rng.low + 0.62 * span, rng.low + 0.79 * span)
+
+
+# ---------------------------------------------------------------------------
+# Measurements the study book specifies precisely
+# ---------------------------------------------------------------------------
+# Chapter 9 is emphatic that naming the wrong object moves the reference: for
+# O=108, C=104, H=116, L=102 the upper-wick midpoint is 112 while the
+# whole-candle midpoint is 109. Three units of difference is the whole trade.
+
+def upper_wick_midpoint(o: float, h: float, c: float) -> float:
+    """Midpoint of the upper wick: [max(O, C) + H] / 2."""
+    return (max(float(o), float(c)) + float(h)) / 2.0
+
+
+def lower_wick_midpoint(o: float, l: float, c: float) -> float:
+    """Midpoint of the lower wick: [L + min(O, C)] / 2."""
+    return (float(l) + min(float(o), float(c))) / 2.0
+
+
+def candle_midpoint(h: float, l: float) -> float:
+    """Whole-candle midpoint: (H + L) / 2. Not the same object as a wick midpoint."""
+    return (float(h) + float(l)) / 2.0
+
+
+def consequent_encroachment(top: float, bottom: float) -> float:
+    """Midpoint of an identified gap, wick or inefficiency."""
+    return (float(top) + float(bottom)) / 2.0
+
+
+@dataclass
+class WickPair:
+    """Two opposing wick midpoints and the interval between them.
+
+    The Obsidian review measures an upper wick on one candle and a lower wick
+    on another, then studies the interval between their midpoints. The book is
+    careful that any two opposing wicks somewhere on a chart are *not*
+    sufficient to establish the method, so this reports the measurement and
+    leaves qualification to the caller.
+    """
+    upper_idx: int
+    lower_idx: int
+    upper_t: int
+    lower_t: int
+    upper_mid: float
+    lower_mid: float
+
+    @property
+    def interval(self) -> Tuple[float, float]:
+        return (min(self.upper_mid, self.lower_mid), max(self.upper_mid, self.lower_mid))
+
+    @property
+    def width(self) -> float:
+        low, high = self.interval
+        return high - low
+
+    def contains(self, price: float) -> bool:
+        low, high = self.interval
+        return low <= price <= high
+
+    def as_dict(self) -> Dict[str, Any]:
+        low, high = self.interval
+        return {
+            "upper_t": self.upper_t, "lower_t": self.lower_t,
+            "upper_mid": round(self.upper_mid, 2), "lower_mid": round(self.lower_mid, 2),
+            "interval_low": round(low, 2), "interval_high": round(high, 2),
+            "width": round(self.width, 2),
+        }
+
+
+def opposing_wick_pairs(df: pd.DataFrame, lookback: int = 20,
+                        min_wick_atr: float = 0.15,
+                        atr_value: Optional[float] = None,
+                        max_separation: int = 6) -> List[WickPair]:
+    """Recent candle pairs with opposing wicks, best first.
+
+    A pair is one candle carrying a qualifying upper wick and another, within
+    `max_separation` bars, carrying a qualifying lower wick. Pairs are ranked
+    by how recent they are and how pronounced both wicks are.
+
+    Only the geometry is established here. The book's verification table lists
+    the qualifying event, the surrounding narrative and the protection rules
+    as unresolved, so nothing here claims a pair is tradable.
+    """
+    _require(df)
+    n = len(df)
+    if n < 2:
+        return []
+    if atr_value is None:
+        atr_value = atr(df).value
+    threshold = max(atr_value * min_wick_atr, 0.0)
+
+    o = df["o"].to_numpy(dtype=float)
+    h = df["h"].to_numpy(dtype=float)
+    low = df["l"].to_numpy(dtype=float)
+    c = df["c"].to_numpy(dtype=float)
+    ts = df["t"].to_numpy(dtype="int64")
+
+    start = max(n - lookback, 0)
+    upper_len = {i: h[i] - max(o[i], c[i]) for i in range(start, n)}
+    lower_len = {i: min(o[i], c[i]) - low[i] for i in range(start, n)}
+    uppers = [i for i in range(start, n) if upper_len[i] >= threshold]
+    lowers = [i for i in range(start, n) if lower_len[i] >= threshold]
+
+    scored: List[Tuple[float, WickPair]] = []
+    for ui in uppers:
+        for li in lowers:
+            if ui == li or abs(ui - li) > max_separation:
+                continue
+            recency = 1.0 - (n - 1 - max(ui, li)) / float(max(lookback, 1))
+            size = upper_len[ui] + lower_len[li]
+            scored.append((
+                recency * 2.0 + (size / atr_value if atr_value > 0 else 0.0),
+                WickPair(
+                    upper_idx=ui, lower_idx=li,
+                    upper_t=int(ts[ui]), lower_t=int(ts[li]),
+                    upper_mid=upper_wick_midpoint(o[ui], h[ui], c[ui]),
+                    lower_mid=lower_wick_midpoint(o[li], low[li], c[li]),
+                ),
+            ))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [pair for _, pair in scored[:8]]
+
+
+@dataclass
+class Inversion:
+    """A gap that failed on a *close* and is now used from the other side.
+
+    Chapter 10 draws the line explicitly: a wick through a bullish gap is not
+    a bearish inversion, a close below is required. It also notes this is not
+    one universal rule across every lesson, so the trigger is recorded rather
+    than assumed.
+    """
+    gap: "FVG"
+    inverted_idx: int
+    inverted_t: int
+    new_direction: str
+    trigger: str          # "close_beyond"
+    close_price: float
+    retested: bool = False
+    retest_idx: Optional[int] = None
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {
+            "original_direction": self.gap.direction,
+            "new_direction": self.new_direction,
+            "top": round(self.gap.top, 2), "bottom": round(self.gap.bottom, 2),
+            "midpoint": round(self.gap.midpoint, 2),
+            "formed_t": self.gap.t, "inverted_t": self.inverted_t,
+            "trigger": self.trigger, "close_price": round(self.close_price, 2),
+            "retested": self.retested,
+        }
+
+
+def find_inversions(df: pd.DataFrame, gaps: Optional[List[FVG]] = None) -> List[Inversion]:
+    """Gaps whose failure was confirmed by a close beyond the far boundary.
+
+    A wick through the boundary is deliberately not enough. The two events are
+    separated because a stop can be taken out by the wick long before the
+    close qualifies the label, and classification never retroactively protects
+    a position.
+    """
+    _require(df)
+    n = len(df)
+    if n < 4:
+        return []
+    gaps = gaps if gaps is not None else find_fvgs(df)
+
+    close = df["c"].to_numpy(dtype=float)
+    high = df["h"].to_numpy(dtype=float)
+    low = df["l"].to_numpy(dtype=float)
+    ts = df["t"].to_numpy(dtype="int64")
+
+    out: List[Inversion] = []
+    for gap in gaps:
+        for j in range(gap.idx + 1, n):
+            failed = (gap.direction == BULLISH and close[j] < gap.bottom) or \
+                     (gap.direction == BEARISH and close[j] > gap.top)
+            if not failed:
+                continue
+            inv = Inversion(
+                gap=gap, inverted_idx=j, inverted_t=int(ts[j]),
+                new_direction=BEARISH if gap.direction == BULLISH else BULLISH,
+                trigger="close_beyond", close_price=float(close[j]),
+            )
+            # An inverted gap is normally traded on its retest, so record it.
+            for k in range(j + 1, n):
+                if low[k] <= gap.top and high[k] >= gap.bottom:
+                    inv.retested, inv.retest_idx = True, k
+                    break
+            out.append(inv)
+            break
+    return out
+
+
+@dataclass
+class PresentedGap:
+    """A gap carrying its chronological identity.
+
+    Chapter 11 keeps three identities apart: the first gap after the open, the
+    first gap that displaced beyond a relevant swing, and the first subsequent
+    gap opposite in direction to the chronological first, which the source
+    calls the first-presented reflection. A later displacing gap can take
+    emphasis without changing which gap was chronologically first.
+    """
+    gap: FVG
+    identity: str          # "chronological" | "displacement" | "reflection"
+    knowable_t: int        # when the completed three-candle pattern became visible
+
+    def as_dict(self) -> Dict[str, Any]:
+        out = self.gap.as_dict()
+        out["identity"] = self.identity
+        out["knowable_t"] = self.knowable_t
+        return out
+
+
+def first_presented_gaps(df: pd.DataFrame, session_start_ts: int,
+                         swings: Optional[List[Swing]] = None,
+                         strength: int = 2) -> Dict[str, Optional[PresentedGap]]:
+    """Classify the session's first gaps by the three distinct identities.
+
+    The middle candle's label time is not the moment the pattern is knowable:
+    the third candle has to close first, so `knowable_t` is recorded
+    separately from the gap's own timestamp.
+    """
+    _require(df)
+    out: Dict[str, Optional[PresentedGap]] = {
+        "chronological": None, "displacement": None, "reflection": None,
+    }
+    if df.empty:
+        return out
+
+    gaps = [g for g in find_fvgs(df) if g.t >= session_start_ts]
+    if not gaps:
+        return out
+    swings = swings if swings is not None else find_swings(df, strength)
+
+    first = gaps[0]
+    out["chronological"] = PresentedGap(first, "chronological", first.t)
+
+    # First gap whose leg displaced beyond a swing formed before it.
+    close = df["c"].to_numpy(dtype=float)
+    for gap in gaps:
+        prior_highs = [s for s in swings if s.kind == "high" and s.idx + strength <= gap.idx]
+        prior_lows = [s for s in swings if s.kind == "low" and s.idx + strength <= gap.idx]
+        if gap.direction == BULLISH and prior_highs and close[gap.idx] > prior_highs[-1].price:
+            out["displacement"] = PresentedGap(gap, "displacement", gap.t)
+            break
+        if gap.direction == BEARISH and prior_lows and close[gap.idx] < prior_lows[-1].price:
+            out["displacement"] = PresentedGap(gap, "displacement", gap.t)
+            break
+
+    # First later gap opposite in direction to the chronological first.
+    for gap in gaps[1:]:
+        if gap.direction != first.direction:
+            out["reflection"] = PresentedGap(gap, "reflection", gap.t)
+            break
+    return out
+
+
+def grade_range(low: float, high: float, divisions: int = 8) -> Dict[str, float]:
+    """Subdivide a range into equal parts: quarters, octants and so on.
+
+    Chapter 5's arithmetic exactly: for 100 to 180 the width is 80, the
+    midpoint 140, quarters 120 and 160, eighths every 10 units. The
+    subdivision is exact; whether the chosen range is *useful* is a separate
+    judgement the book insists on keeping separate.
+    """
+    low, high = float(low), float(high)
+    width = high - low
+    out = {"low": low, "high": high, "width": width, "midpoint": low + 0.5 * width}
+    for i in range(divisions + 1):
+        q = i / divisions
+        out[f"q{i}_{divisions}"] = low + q * width
+    return out
+
+
+def project_range(low: float, high: float, q: float) -> float:
+    """Project a level outside the range: low + q x (high - low).
+
+    A half-range projection above the high of a 100-180 range is
+    180 + 0.5 x 80 = 220. This is a range extension, not a standard deviation.
+    """
+    return float(low) + float(q) * (float(high) - float(low))

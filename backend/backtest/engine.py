@@ -21,6 +21,7 @@ import pandas as pd
 
 from backend.agents.base import MarketContext
 from backend.agents.orchestrator import AgentFarm, Decision
+from backend.ict.contracts import Contract, get_contract
 from backend.ict.sessions import ny_day_start, primary_session
 from backend.store import TF_MINUTES, resample_ohlcv
 
@@ -39,7 +40,10 @@ class BacktestTrade:
     exit_price: Optional[float] = None
     exit_reason: str = "open"
     r_multiple: float = 0.0
-    pnl: float = 0.0
+    pnl: float = 0.0          # net of costs
+    gross_pnl: float = 0.0
+    costs: float = 0.0
+    entry_family: str = "confirmed"
     mae_r: float = 0.0        # worst excursion against the trade, in R
     mfe_r: float = 0.0        # best excursion in favour, in R
     session: Optional[str] = None
@@ -58,6 +62,9 @@ class BacktestTrade:
             "exit_reason": self.exit_reason,
             "r_multiple": round(self.r_multiple, 3),
             "pnl": round(self.pnl, 2),
+            "gross_pnl": round(self.gross_pnl, 2),
+            "costs": round(self.costs, 2),
+            "entry_family": self.entry_family,
             "mae_r": round(self.mae_r, 2),
             "mfe_r": round(self.mfe_r, 2),
             "session": self.session,
@@ -76,6 +83,9 @@ class BacktestResult:
     equity_curve: List[Tuple[int, float]] = field(default_factory=list)
     decisions_evaluated: int = 0
     signals_generated: int = 0
+    # The study insists unfilled orders and rejected candidates are part of
+    # the sample: keeping only the fills that happened flatters the record.
+    orders_cancelled: Dict[str, int] = field(default_factory=dict)
     metrics: Dict[str, Any] = field(default_factory=dict)
     warnings: List[str] = field(default_factory=list)
 
@@ -88,6 +98,7 @@ class BacktestResult:
             "ending_equity": round(self.ending_equity, 2),
             "decisions_evaluated": self.decisions_evaluated,
             "signals_generated": self.signals_generated,
+            "orders_cancelled": self.orders_cancelled,
             "metrics": self.metrics,
             "warnings": self.warnings,
             "equity_curve": [[int(t), round(float(e), 2)] for t, e in self.equity_curve],
@@ -183,7 +194,7 @@ class Backtester:
         l_arr = df_1m["l"].to_numpy(dtype=float)
         c_arr = df_1m["c"].to_numpy(dtype=float)
 
-        contract_value = float(cfg.get("contract_value", 1.0))
+        contract = get_contract(cfg.get("contract"))
 
         for i in range(warmup_bars, len(df_1m)):
             now = int(t_arr[i])
@@ -195,7 +206,7 @@ class Backtester:
 
             # -- manage an open position on this bar -----------------------
             if open_trade is not None:
-                closed = self._manage(open_trade, h_arr[i], l_arr[i], now, contract_value)
+                closed = self._manage(open_trade, h_arr[i], l_arr[i], now, contract)
                 if closed:
                     equity += open_trade.pnl
                     result.equity_curve.append((now, equity))
@@ -205,22 +216,41 @@ class Backtester:
 
             # -- work a resting limit order --------------------------------
             if pending is not None:
+                # Chapter 19 fixes these cancellation rules before results are
+                # collected: cancel if the target trades first, if protection
+                # is breached before entry, or if the session deadline passes.
+                cancel: Optional[str] = None
                 if now > pending["expires"]:
-                    pending = None
+                    cancel = "expired"
+                elif pending["direction"] == "LONG":
+                    if h_arr[i] >= pending["target"]:
+                        cancel = "target_traded_first"
+                    elif l_arr[i] <= pending["stop"]:
+                        cancel = "protection_breached_before_entry"
                 else:
-                    entry = pending["entry"]
-                    touched = l_arr[i] <= entry <= h_arr[i]
-                    if touched:
-                        open_trade = BacktestTrade(
-                            direction=pending["direction"], entry_ts=now, entry=entry,
-                            stop=pending["stop"], target=pending["target"],
-                            units=pending["units"],
-                            session=(primary_session(now).name if primary_session(now) else None),
-                            narrative=pending["narrative"],
-                        )
-                        trades_today += 1
-                        pending = None
+                    if l_arr[i] <= pending["target"]:
+                        cancel = "target_traded_first"
+                    elif h_arr[i] >= pending["stop"]:
+                        cancel = "protection_breached_before_entry"
+
+                if cancel:
+                    result.orders_cancelled[cancel] = result.orders_cancelled.get(cancel, 0) + 1
+                    pending = None
                     continue
+
+                entry = pending["entry"]
+                if l_arr[i] <= entry <= h_arr[i]:
+                    open_trade = BacktestTrade(
+                        direction=pending["direction"], entry_ts=now, entry=entry,
+                        stop=pending["stop"], target=pending["target"],
+                        units=pending["units"],
+                        session=(primary_session(now).name if primary_session(now) else None),
+                        narrative=pending["narrative"],
+                        entry_family=pending.get("entry_family", "retracement"),
+                    )
+                    trades_today += 1
+                    pending = None
+                continue
 
             # -- decision points -------------------------------------------
             if now % step_seconds != 0:
@@ -267,6 +297,7 @@ class Backtester:
                     stop=plan.stop, target=plan.take_profit, units=plan.units,
                     session=(primary_session(now).name if primary_session(now) else None),
                     narrative=decision.narrative,
+                    entry_family=plan.entry_family,
                 )
                 trades_today += 1
             else:
@@ -275,11 +306,12 @@ class Backtester:
                     "target": plan.take_profit, "units": plan.units,
                     "expires": now + self.limit_expiry_minutes * 60,
                     "narrative": decision.narrative,
+                    "entry_family": plan.entry_family,
                 }
 
         # Close anything still open at the end of the sample, at the last price.
         if open_trade is not None:
-            self._close(open_trade, float(c_arr[-1]), int(t_arr[-1]), "end_of_sample", contract_value)
+            self._close(open_trade, float(c_arr[-1]), int(t_arr[-1]), "end_of_sample", contract)
             equity += open_trade.pnl
             result.trades.append(open_trade)
             result.equity_curve.append((int(t_arr[-1]), equity))
@@ -291,7 +323,7 @@ class Backtester:
 
     # -- position management ----------------------------------------------
     def _manage(self, trade: BacktestTrade, high: float, low: float,
-                now: int, contract_value: float) -> bool:
+                now: int, contract: Contract) -> bool:
         risk = abs(trade.entry - trade.stop) or 1e-9
         if trade.direction == "LONG":
             trade.mae_r = min(trade.mae_r, (low - trade.entry) / risk)
@@ -299,37 +331,46 @@ class Backtester:
             # Stop first when both levels are inside one bar: the pessimistic
             # assumption, since 1m bars do not say which came first.
             if low <= trade.stop:
-                self._close(trade, trade.stop, now, "stop", contract_value)
+                self._close(trade, trade.stop, now, "stop", contract)
                 return True
             if high >= trade.target:
-                self._close(trade, trade.target, now, "target", contract_value)
+                self._close(trade, trade.target, now, "target", contract)
                 return True
         else:
             trade.mae_r = min(trade.mae_r, (trade.entry - high) / risk)
             trade.mfe_r = max(trade.mfe_r, (trade.entry - low) / risk)
             if high >= trade.stop:
-                self._close(trade, trade.stop, now, "stop", contract_value)
+                self._close(trade, trade.stop, now, "stop", contract)
                 return True
             if low <= trade.target:
-                self._close(trade, trade.target, now, "target", contract_value)
+                self._close(trade, trade.target, now, "target", contract)
                 return True
 
         if now - trade.entry_ts >= self.max_hold_minutes * 60:
             price = (high + low) / 2.0
-            self._close(trade, price, now, "time_stop", contract_value)
+            self._close(trade, price, now, "time_stop", contract)
             return True
         return False
 
     @staticmethod
     def _close(trade: BacktestTrade, price: float, ts: int, reason: str,
-               contract_value: float) -> None:
+               contract: Contract) -> None:
+        """Close the position and book both gross and net results.
+
+        Costs are charged on the round trip. The study's Appendix C makes the
+        point plainly: a gross 2.00 reward-to-risk is a net 1.65, and ignoring
+        that difference makes every backtest look better than the account
+        would have.
+        """
         sign = 1.0 if trade.direction == "LONG" else -1.0
         risk = abs(trade.entry - trade.stop) or 1e-9
         trade.exit_price = float(price)
         trade.exit_ts = int(ts)
         trade.exit_reason = reason
         trade.r_multiple = sign * (price - trade.entry) / risk
-        trade.pnl = sign * (price - trade.entry) * trade.units * contract_value
+        trade.gross_pnl = contract.gross_pnl(trade.entry, price, trade.units, trade.direction)
+        trade.costs = contract.costs(trade.units)
+        trade.pnl = trade.gross_pnl - trade.costs
 
 
 def compute_metrics(trades: List[BacktestTrade], starting_equity: float,
@@ -340,6 +381,8 @@ def compute_metrics(trades: List[BacktestTrade], starting_equity: float,
     n = len(closed)
     base = {
         "trades": n,
+        "gross_pnl": 0.0, "costs_paid": 0.0, "net_pnl": 0.0,
+        "by_entry_family": {},
         "wins": 0, "losses": 0, "win_rate": 0.0,
         "total_r": 0.0, "avg_r": 0.0, "expectancy_r": 0.0,
         "profit_factor": 0.0, "max_drawdown_pct": 0.0,
@@ -372,15 +415,29 @@ def compute_metrics(trades: List[BacktestTrade], starting_equity: float,
         key = t.session or "none"
         row = by_session.setdefault(key, {"trades": 0, "total_r": 0.0})
         row["trades"] += 1
-        row["total_r"] = round(row["total_r"] + t.r_multiple, 3)
+        row["total_r"] = round(float(row["total_r"]) + float(t.r_multiple), 3)
 
     by_direction: Dict[str, Dict[str, Any]] = {}
     for t in closed:
         row = by_direction.setdefault(t.direction, {"trades": 0, "total_r": 0.0})
         row["trades"] += 1
-        row["total_r"] = round(row["total_r"] + t.r_multiple, 3)
+        row["total_r"] = round(float(row["total_r"]) + float(t.r_multiple), 3)
+
+    gross_total = float(sum(t.gross_pnl for t in closed))
+    cost_total = float(sum(t.costs for t in closed))
+    by_family: Dict[str, Dict[str, Any]] = {}
+    for t in closed:
+        row = by_family.setdefault(t.entry_family, {"trades": 0, "total_r": 0.0})
+        row["trades"] += 1
+        row["total_r"] = round(float(row["total_r"]) + float(t.r_multiple), 3)
 
     base.update({
+        # Gross and net are reported side by side because the difference is
+        # the whole point of the study's cost arithmetic.
+        "gross_pnl": round(gross_total, 2),
+        "costs_paid": round(cost_total, 2),
+        "net_pnl": round(gross_total - cost_total, 2),
+        "by_entry_family": by_family,
         "wins": int(len(wins)), "losses": int(len(losses)),
         "win_rate": round(len(wins) / n, 4),
         "total_r": round(float(rs.sum()), 3),
@@ -395,5 +452,10 @@ def compute_metrics(trades: List[BacktestTrade], starting_equity: float,
         "by_exit_reason": by_reason,
         "by_session": by_session,
         "by_direction": by_direction,
+        # The hit rate this sample's average win and loss would have needed
+        # just to break even, which is the honest yardstick for the win rate.
+        "break_even_rate": round(
+            abs(float(losses.mean())) / (float(wins.mean()) + abs(float(losses.mean()))), 4
+        ) if len(wins) and len(losses) else 0.0,
     })
     return base

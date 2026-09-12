@@ -104,15 +104,55 @@ def test_plan_geometry_is_coherent(synthetic_1m):
         assert plan.stop_distance > 0
 
 
-def test_risk_on_a_plan_matches_the_configured_budget(synthetic_1m):
+def test_risk_on_a_plan_stays_inside_the_budget(synthetic_1m):
+    """Sizing is in whole contracts including costs, so the realised risk sits
+    at or below the budget and within one contract of it."""
+    from backend.ict.contracts import get_contract
     farm = AgentFarm(agents=[Stub("bull", score=1.0, weight=3.0)],
-                     config={"require_killzone": False})
+                     config={"require_killzone": False, "contract": "MNQ"})
     ctx = ctx_from(synthetic_1m)
     ctx.equity, ctx.risk_per_trade = 100_000.0, 0.005
     decision = farm.evaluate(ctx)
     if decision.plan:
-        loss_at_stop = decision.plan.units * decision.plan.stop_distance
-        assert loss_at_stop == pytest.approx(500.0, rel=0.02)
+        plan = decision.plan
+        contract = get_contract(plan.contract)
+        budget = 500.0
+        risk_per_unit = plan.stop_distance * contract.dollars_per_point + contract.round_trip_cost
+        realised = plan.units * risk_per_unit
+        assert realised <= budget + 1e-6
+        assert realised + risk_per_unit > budget, "should size up to the budget"
+        assert plan.units == int(plan.units), "contracts are whole units"
+
+
+def test_plan_levels_sit_on_tradable_increments(synthetic_1m):
+    """A level that cannot be quoted cannot be an order."""
+    from backend.ict.contracts import get_contract
+    farm = AgentFarm(agents=[Stub("bull", score=1.0, weight=3.0)],
+                     config={"require_killzone": False, "contract": "MNQ"})
+    decision = farm.evaluate(ctx_from(synthetic_1m))
+    if decision.plan:
+        contract = get_contract(decision.plan.contract)
+        for level in (decision.plan.entry, decision.plan.stop, decision.plan.take_profit):
+            assert level == pytest.approx(contract.round_to_tick(level)), level
+
+
+def test_net_reward_to_risk_is_reported_and_below_gross(synthetic_1m):
+    farm = AgentFarm(agents=[Stub("bull", score=1.0, weight=3.0)],
+                     config={"require_killzone": False, "contract": "MNQ"})
+    decision = farm.evaluate(ctx_from(synthetic_1m))
+    if decision.plan:
+        assert decision.plan.net_risk_reward > 0
+        assert decision.plan.net_risk_reward < decision.plan.risk_reward
+        assert 0 < decision.plan.break_even_rate < 1
+
+
+def test_pyramiding_is_limited_to_equilibrium_or_better():
+    """The October lesson limits long additions to equilibrium or below."""
+    farm = AgentFarm()
+    assert farm.pyramid_allowed(LONG, price=110.0, equilibrium=120.0) is True
+    assert farm.pyramid_allowed(LONG, price=130.0, equilibrium=120.0) is False
+    assert farm.pyramid_allowed(SHORT, price=130.0, equilibrium=120.0) is True
+    assert farm.pyramid_allowed(SHORT, price=110.0, equilibrium=120.0) is False
 
 
 def test_direction_is_symmetric_under_price_mirroring(synthetic_1m):
@@ -142,7 +182,7 @@ def test_decision_serialises_completely(synthetic_1m):
     out = decision.as_dict()
     assert set(out) >= {"symbol", "action", "net_score", "agreement", "conviction",
                         "plan", "narrative", "vetoes", "agents"}
-    assert len(out["agents"]) == 11
+    assert len(out["agents"]) == 17
     assert all("rationale" in a for a in out["agents"])
     import json
     json.dumps(out)   # must be JSON-serialisable for the API
@@ -150,7 +190,7 @@ def test_decision_serialises_completely(synthetic_1m):
 
 def test_roster_is_exposed():
     roster = AgentFarm().roster()
-    assert len(roster) == 11
+    assert len(roster) == 17
     names = {a["name"] for a in roster}
     assert {"htf_bias", "liquidity_sweep", "killzone", "risk_manager"} <= names
 
@@ -184,3 +224,43 @@ def test_a_wide_anchor_is_left_alone():
     farm = AgentFarm(config={"min_stop_atr": 0.5, "stop_buffer_atr": 0.1})
     stop = farm._stop_level(LONG, {"ob_bottom": 80.0}, entry=100.0, atr_val=10.0)
     assert stop == pytest.approx(80.0 - 1.0)   # anchor minus the buffer, untouched
+
+
+def test_abstaining_agents_do_not_dilute_the_vote(synthetic_1m):
+    """Regression: normalising by the whole roster let agents that correctly
+    abstain throttle everyone else, so installing more specialists quietly
+    made the farm stop trading."""
+    ctx_a, ctx_b = ctx_from(synthetic_1m), ctx_from(synthetic_1m)
+    lone = AgentFarm(agents=[Stub("bull", score=0.8, confidence=1.0, weight=2.0)])
+    with_abstainers = AgentFarm(agents=[
+        Stub("bull", score=0.8, confidence=1.0, weight=2.0),
+        *[Stub(f"quiet{i}", score=0.0, confidence=0.0, weight=2.0) for i in range(6)],
+    ])
+    assert lone.evaluate(ctx_a).net_score == pytest.approx(
+        with_abstainers.evaluate(ctx_b).net_score
+    )
+
+
+def test_participation_is_reported_and_gates_a_lone_voice(synthetic_1m):
+    """A weighted mean can hit full conviction on one voice, so participation
+    has to be measured and floored."""
+    farm = AgentFarm(
+        agents=[
+            Stub("loud", score=1.0, confidence=1.0, weight=1.0),
+            *[Stub(f"quiet{i}", score=0.0, confidence=0.0, weight=3.0) for i in range(4)],
+        ],
+        config={"require_killzone": False, "min_participation": 0.5},
+    )
+    decision = farm.evaluate(ctx_from(synthetic_1m))
+    assert decision.participation < 0.5
+    assert decision.action == "STAND_ASIDE"
+    assert "has a view" in decision.narrative
+
+
+def test_participation_passes_when_the_farm_is_engaged(synthetic_1m):
+    farm = AgentFarm(
+        agents=[Stub(f"bull{i}", score=0.9, confidence=0.9, weight=2.0) for i in range(4)],
+        config={"require_killzone": False, "min_participation": 0.5},
+    )
+    decision = farm.evaluate(ctx_from(synthetic_1m))
+    assert decision.participation == pytest.approx(0.9)

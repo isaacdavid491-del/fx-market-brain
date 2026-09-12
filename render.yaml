@@ -39,6 +39,12 @@ services:
         value: "0.03"
       - key: ICT_EQUITY
         value: "100000"
+      - key: ICT_CONTRACT
+        value: MNQ
+      - key: ICT_MIN_PARTICIPATION
+        value: "0.25"
+      - key: ICT_INCLUDE_COSTS
+        value: "true"
     disk:
       name: data
       mountPath: /data

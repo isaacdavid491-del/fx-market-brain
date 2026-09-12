@@ -145,6 +145,7 @@ async function load() {
     ["Net score", fmt(data.net_score, 3)],
     ["Conviction (after gates)", fmt(data.conviction, 3)],
     ["Agreement", (data.agreement * 100).toFixed(0) + "%"],
+    ["Participation", ((data.participation || 0) * 100).toFixed(0) + "%"],
     ["Agents reporting", data.agents.length],
   ].map(([k, v]) => `<div class="kv"><span>${k}</span><span>${v}</span></div>`).join("");
 
@@ -156,9 +157,12 @@ async function load() {
       ["Stop", fmt(p.stop)],
       ["Target", fmt(p.take_profit)],
       ["Second target", fmt(p.secondary_target)],
-      ["Reward:risk", fmt(p.risk_reward, 1) + " : 1"],
-      ["Size", `${p.units} units`],
-      ["Risk", fmt(p.risk_currency)],
+      ["Reward:risk (gross)", fmt(p.risk_reward, 1) + " : 1"],
+      ["Reward:risk (net)", fmt(p.net_risk_reward, 2) + " : 1"],
+      ["Break-even hit rate", ((p.break_even_rate || 0) * 100).toFixed(0) + "%"],
+      ["Size", `${p.units} x ${p.contract}`],
+      ["Risk", fmt(p.risk_currency) + ` (costs ${fmt(p.costs)})`],
+      ["Entry family", p.entry_family],
     ].map(([k, v]) => `<div class="kv"><span>${k}</span><span>${v}</span></div>`).join("")
       + `<div class="why" style="margin-top:8px">${p.reasoning.join(" ")}</div>`;
   } else {
@@ -197,6 +201,8 @@ async function backtest() {
       ["Profit factor", fmt(m.profit_factor, 2)],
       ["Max drawdown", fmt(m.max_drawdown_pct, 2) + "%"],
       ["Return", fmt(m.return_pct, 2) + "%"],
+      ["Gross / costs / net", `${fmt(m.gross_pnl)} / ${fmt(m.costs_paid)} / ${fmt(m.net_pnl)}`],
+      ["Break-even rate needed", ((m.break_even_rate || 0) * 100).toFixed(0) + "%"],
       ["Decisions evaluated", data.decisions_evaluated],
       ["Signals generated", data.signals_generated],
     ];

@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 
 from backend.ict import core
+from backend.ict import sessions as sessions_mod
 from backend.ict.sessions import session_weight
 
 log = logging.getLogger("ict.agents")
@@ -198,6 +199,45 @@ class MarketContext:
 
     def dealing_range(self, tf: str, lookback: int = 60) -> Optional[core.DealingRange]:
         return self._cached(f"range{lookback}", tf, lambda d: core.dealing_range(d, lookback))
+
+    # -- measurements from the study book ---------------------------------
+    def inversions(self, tf: str) -> List[core.Inversion]:
+        return self._cached("inversions", tf,
+                            lambda d: core.find_inversions(d, self.fvgs(tf)))
+
+    def wick_pairs(self, tf: str, lookback: int = 20) -> List[core.WickPair]:
+        return self._cached(
+            f"wickpairs{lookback}", tf,
+            lambda d: core.opposing_wick_pairs(d, lookback=lookback, atr_value=self.atr(tf)),
+        )
+
+    def premarket(self, tf: str) -> sessions_mod.NamedRange:
+        return self._cached("premarket", tf,
+                            lambda d: sessions_mod.premarket_range(d, self.now_ts))
+
+    def opening_range(self, tf: str) -> sessions_mod.NamedRange:
+        return self._cached("opening_range", tf,
+                            lambda d: sessions_mod.opening_range(d, self.now_ts))
+
+    def opening_gap(self, tf: str) -> Dict[str, Any]:
+        return self._cached("opening_gap", tf,
+                            lambda d: sessions_mod.opening_gap(d, self.now_ts))
+
+    def new_week_gap(self, tf: str) -> Dict[str, Any]:
+        return self._cached("nwog", tf,
+                            lambda d: sessions_mod.new_week_opening_gap(d, self.now_ts))
+
+    def presented_gaps(self, tf: str) -> Dict[str, Optional[core.PresentedGap]]:
+        def build(d):
+            day = sessions_mod.ny_day_start(self.now_ts)
+            open_ts = day + 9 * 3600 + 30 * 60   # 09:30 New York
+            return core.first_presented_gaps(d, open_ts, self.swings(tf))
+        return self._cached("presented", tf, build)
+
+    @property
+    def contract(self):
+        from backend.ict.contracts import get_contract
+        return get_contract(self.config.get("contract"))
 
 
 def core_columns() -> List[str]:
