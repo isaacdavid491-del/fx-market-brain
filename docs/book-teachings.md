@@ -266,3 +266,106 @@ the numerator and the denominator, so it neither argues for a trade nor
 against one. Because a mean can reach full conviction on a single voice, a
 `participation` measure and floor were added alongside it, and both are
 reported on every decision.
+
+
+---
+
+## Partial exits: do they improve expectancy?
+
+Chapter 15 describes reducing a position as it works — a favourable partial, a
+further reduction when the expected behaviour weakens, tightened protection on
+the last unit. Chapter 21 works the arithmetic: three units short at 140
+protected at 146 carry 18 point-units of risk, and exits at 130, 134 and 138
+realise 18 point-units, which is 1.00 times initial risk rather than the 4.00
+a full exit at the far objective would have given.
+
+That arithmetic is implemented in `ExitPolicy` and asserted as a test. R is
+always measured against the **initial** stop distance, so moving protection
+later never rewrites the risk the trade was taken with, and each leg
+contributes its R weighted by the share of the position it closed.
+
+Seven policies were replayed over the same 30 days: all out at target, half at
+1R, half at 2R, thirds at 1R and 2R, each of the scaling variants with the
+stop moved to breakeven, and one with a trailing stop.
+
+### The aggregate table, which is misleading
+
+| Policy | Trades | Win rate | Expectancy | Max drawdown |
+|---|---|---|---|---|
+| half_at_1R | 63 | 25% | +0.147 R | 2.1% |
+| thirds_1R_2R | 63 | 41% | +0.141 R | 2.7% |
+| half_at_1R_trail | 67 | 46% | +0.138 R | 1.9% |
+| half_at_2R | 63 | 41% | +0.130 R | 4.2% |
+| half_at_1R_breakeven | 67 | 63% | +0.083 R | 2.7% |
+| thirds_1R_2R_breakeven | 67 | 63% | +0.069 R | 2.4% |
+| all_at_target | 63 | 25% | +0.067 R | 5.2% |
+
+Read naively this says partial exits roughly double expectancy. **That reading
+is wrong**, and the error is worth recording because it is easy to make.
+
+A scale-out changes *when* a position closes. The farm holds one position at a
+time, so closing earlier changes when the next signal can be acted on, which
+reshuffles every trade after it. The policies are not managing the same trades;
+they are trading different sequences. Comparing their aggregate expectancy
+compares two different samples.
+
+### The paired comparison, which is not
+
+Restricting to the 55 trades every policy actually took, with the same entry
+timestamp:
+
+| Policy | Mean R | Std dev of R | Best trade |
+|---|---|---|---|
+| all_at_target | +0.200 | 2.17 | +11.39 R |
+| half_at_1R | +0.201 | 1.41 | +6.19 R |
+| thirds_1R_2R | +0.186 | 1.40 | +5.46 R |
+| half_at_1R_breakeven | +0.234 | 1.33 | +6.19 R |
+
+Against the baseline, on matched trades:
+
+| Policy | Difference | Standard error | t |
+|---|---|---|---|
+| half_at_1R | +0.001 R | 0.126 | +0.00 |
+| thirds_1R_2R | -0.015 R | 0.137 | -0.11 |
+| half_at_1R_breakeven | +0.033 R | 0.167 | +0.20 |
+
+**Partial exits did not improve expectancy.** Every difference is a small
+fraction of its own standard error. What they did do is cut the standard
+deviation of per-trade returns by 35 to 39%, and roughly halve maximum
+drawdown.
+
+This is the textbook result and the theoretically expected one: on a random
+walk no exit rule can change the expected value of a position, because the
+price process is a martingale and stopping it at a different time does not
+alter its mean. Scaling out trades upside for consistency. The mechanism is
+visible in one trade and is asserted as a test: half banked at +1R against a
+later stop nets zero where the unscaled trade loses a full R, and half banked
+at +1R against a +10R run returns 5.5R rather than 10R.
+
+### On breakeven stops
+
+The book warns that moving a stop into an expected supportive retracement can
+cause an early exit. The breakeven variants show the shape of that cost: the
+win rate jumps from 25% to 63%, which looks like a large improvement and is
+not one. Thirty-five of those trades exit at the moved stop rather than at
+target, and in the aggregate run the policy's expectancy was *lower* than
+plain scaling. On matched trades the difference was again inside the noise.
+
+The lesson is about the metric rather than the policy: a 63% win rate with
+worse expectancy than a 25% win rate is the clearest possible demonstration
+that win rate does not measure whether a rule is any good.
+
+### What this does and does not establish
+
+The data is synthetic. A random walk is precisely the case where exit policy
+provably cannot matter to the mean, so finding that it does not matter is a
+check that the accounting is sound, not a finding about markets. On real data
+with genuine trend persistence the answer could differ in either direction,
+and the book's own comment on its worked example applies exactly: one path
+"cannot establish the best policy across a sample."
+
+What is robust and worth carrying forward: the variance reduction is
+mechanical rather than statistical, the whole-contract constraint means a
+one-contract position cannot be scaled at all, and any future comparison of
+exit policies must be paired on matched trades rather than read off aggregate
+totals.

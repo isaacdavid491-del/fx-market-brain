@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 
 from backend.agents.orchestrator import DEFAULT_CONFIG, AgentFarm, Decision
-from backend.backtest.engine import Backtester
+from backend.backtest.engine import EXIT_POLICIES, Backtester
 from backend.data.feed import build_context, ingest_latest, seed_history
 from backend.data.providers import CORRELATED_SYMBOL, NASDAQ_SYMBOL, get_provider
 from backend.store import count_rows, latest_ts, load_1m
@@ -66,6 +66,7 @@ def farm_config() -> Dict[str, Any]:
         "min_participation": env_float("ICT_MIN_PARTICIPATION",
                                        DEFAULT_CONFIG["min_participation"]),
         "include_costs": env_bool("ICT_INCLUDE_COSTS", DEFAULT_CONFIG["include_costs"]),
+        "exit_policy": os.getenv("ICT_EXIT_POLICY", "all_at_target"),
     }
 
 
@@ -150,7 +151,8 @@ class FarmService:
     def backtest(self, symbol: Optional[str] = None, days: int = 14,
                  step_minutes: int = 5, equity: Optional[float] = None,
                  require_killzone: Optional[bool] = None,
-                 include_trades: bool = True) -> Dict[str, Any]:
+                 include_trades: bool = True,
+                 exit_policy: Optional[str] = None) -> Dict[str, Any]:
         sym = symbol or self.symbol
         end = int(time.time())
         start = end - days * 86400
@@ -167,11 +169,19 @@ class FarmService:
             peer_df = load_1m(self.correlated_symbol, start, end)
             peer = peer_df if not peer_df.empty else None
 
+        policy_name = exit_policy or config.get("exit_policy", "all_at_target")
+        policy = EXIT_POLICIES.get(policy_name)
+        if policy is None:
+            return {"ok": False,
+                    "error": f"unknown exit policy {policy_name!r}; "
+                             f"choose from {sorted(EXIT_POLICIES)}"}
+
         bt = Backtester(
             farm=AgentFarm(config=config),
             starting_equity=equity if equity is not None else self.equity,
             risk_per_trade=float(config.get("risk_per_trade", 0.005)),
             step_minutes=step_minutes,
+            exit_policy=policy,
         )
         # Leave enough history for the highest timeframe to be meaningful.
         warmup = min(max(len(df) // 4, 2000), max(len(df) - 500, 1))
@@ -186,6 +196,7 @@ class FarmService:
         out["config"] = {k: config[k] for k in
                          ("htf", "mtf", "ltf", "entry_threshold", "min_agreement",
                           "min_rr", "require_killzone", "risk_per_trade")}
+        out["exit_policy"] = policy.as_dict()
         return out
 
 

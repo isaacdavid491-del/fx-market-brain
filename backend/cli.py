@@ -75,7 +75,8 @@ def cmd_backtest(args: argparse.Namespace) -> int:
     out = service.backtest(symbol=args.symbol, days=args.days,
                            step_minutes=args.step,
                            require_killzone=None if args.killzone else False,
-                           include_trades=args.json)
+                           include_trades=args.json,
+                           exit_policy=args.exit_policy)
     if not out.get("ok"):
         print(f"backtest failed: {out.get('error')}", file=sys.stderr)
         return 1
@@ -84,7 +85,8 @@ def cmd_backtest(args: argparse.Namespace) -> int:
         return 0
 
     metrics = out["metrics"]
-    print(f"\n{out['symbol']}  {args.days} days  provider={out['provider']}")
+    print(f"\n{out['symbol']}  {args.days} days  provider={out['provider']}"
+          f"  exits={out.get('exit_policy', {}).get('name', 'n/a')}")
     print(f"decisions {out['decisions_evaluated']}, signals {out['signals_generated']}")
     rows = [
         ("trades", metrics["trades"]),
@@ -139,6 +141,8 @@ def build_parser() -> argparse.ArgumentParser:
     back.add_argument("--days", type=int, default=14)
     back.add_argument("--step", type=int, default=5, help="minutes between decisions")
     back.add_argument("--killzone", action="store_true")
+    back.add_argument("--exit-policy", dest="exit_policy",
+                      help="all_at_target (default), half_at_1R, thirds_1R_2R, ...")
     back.add_argument("--json", action="store_true")
     back.set_defaults(func=cmd_backtest)
 

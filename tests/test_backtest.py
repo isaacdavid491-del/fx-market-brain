@@ -200,3 +200,179 @@ def test_metrics_are_json_serialisable(synthetic_1m):
     for section in ("by_session", "by_direction", "by_entry_family"):
         for row in result.metrics[section].values():
             assert type(row["total_r"]) is float, (section, type(row["total_r"]))
+
+
+# ---------------------------------------------------------------------------
+# Partial exits and position management
+# ---------------------------------------------------------------------------
+
+def test_book_management_arithmetic():
+    """Chapter 21: three units short at 140 protected at 146 carry 18
+    point-units of risk. Exits at 130, 134 and 138 realise 18 point-units,
+    which is 1.00 times initial risk, not the 4.00 a full exit at 116 gives."""
+    from backend.backtest.engine import EXIT_POLICIES
+    bt = Backtester(exit_policy=EXIT_POLICIES["all_at_target"])
+    trade = BacktestTrade(direction="SHORT", entry_ts=0, entry=140.0, stop=146.0,
+                          target=116.0, units=3.0)
+    assert trade.risk_per_unit * trade.initial_units == pytest.approx(18.0)
+
+    bt._book_leg(trade, 130.0, 1.0, 100, "partial", TEST_CONTRACT)
+    bt._book_leg(trade, 134.0, 1.0, 200, "partial", TEST_CONTRACT)
+    bt._close_remaining(trade, 138.0, 300, "manual", TEST_CONTRACT)
+
+    realised_points = sum(leg.units * (140.0 - leg.price) for leg in trade.legs)
+    assert realised_points == pytest.approx(18.0)
+    assert trade.r_multiple == pytest.approx(1.0)
+    assert trade.remaining_units == 0
+    assert len(trade.legs) == 3
+
+
+def test_full_exit_at_the_far_objective_is_four_times_risk():
+    """The comparison the book draws: the same position held to 116."""
+    bt = Backtester()
+    trade = BacktestTrade(direction="SHORT", entry_ts=0, entry=140.0, stop=146.0,
+                          target=116.0, units=3.0)
+    bt._close_remaining(trade, 116.0, 300, "target", TEST_CONTRACT)
+    assert trade.r_multiple == pytest.approx(4.0)
+
+
+def test_scale_out_leaves_a_runner():
+    from backend.backtest.engine import ExitPolicy
+    bt = Backtester(exit_policy=ExitPolicy("half", scale_outs=[(1.0, 0.5)]))
+    trade = BacktestTrade(direction=LONG, entry_ts=0, entry=100.0, stop=99.0,
+                          target=104.0, units=4.0)
+    # Reaches 1R (101) but not the target.
+    closed = bt._manage(trade, high=101.5, low=100.2, now=300, contract=TEST_CONTRACT)
+    assert closed is False
+    assert trade.remaining_units == 2.0
+    assert len(trade.legs) == 1
+    assert trade.legs[0].reason == "scale_1R"
+    assert trade.legs[0].r_at_exit == pytest.approx(1.0)
+
+
+def test_a_single_contract_cannot_be_scaled_out_of():
+    """The book's $50 budget buys one contract; there is nothing to scale."""
+    from backend.backtest.engine import ExitPolicy
+    bt = Backtester(exit_policy=ExitPolicy("half", scale_outs=[(1.0, 0.5)]))
+    trade = BacktestTrade(direction=LONG, entry_ts=0, entry=100.0, stop=99.0,
+                          target=104.0, units=1.0)
+    bt._manage(trade, high=101.5, low=100.2, now=300, contract=TEST_CONTRACT)
+    assert trade.legs == []
+    assert trade.remaining_units == 1.0
+
+
+def test_a_scale_out_never_exceeds_the_remaining_quantity():
+    """An exit order sized for an earlier quantity must not reverse the position."""
+    from backend.backtest.engine import ExitPolicy
+    policy = ExitPolicy("aggressive", scale_outs=[(1.0, 0.9), (1.5, 0.9)])
+    bt = Backtester(exit_policy=policy)
+    trade = BacktestTrade(direction=LONG, entry_ts=0, entry=100.0, stop=99.0,
+                          target=110.0, units=3.0)
+    bt._manage(trade, high=102.0, low=100.5, now=300, contract=TEST_CONTRACT)
+    assert trade.remaining_units >= 0
+    assert sum(leg.units for leg in trade.legs) <= trade.initial_units
+
+
+def test_every_unit_is_accounted_for_at_the_close():
+    from backend.backtest.engine import EXIT_POLICIES
+    bt = Backtester(exit_policy=EXIT_POLICIES["thirds_1R_2R"])
+    trade = BacktestTrade(direction=LONG, entry_ts=0, entry=100.0, stop=99.0,
+                          target=104.0, units=6.0)
+    bt._manage(trade, high=101.2, low=100.1, now=300, contract=TEST_CONTRACT)
+    bt._manage(trade, high=102.2, low=101.0, now=600, contract=TEST_CONTRACT)
+    bt._manage(trade, high=104.5, low=102.0, now=900, contract=TEST_CONTRACT)
+    assert sum(leg.units for leg in trade.legs) == pytest.approx(6.0)
+    assert trade.remaining_units == 0
+
+
+def test_r_is_measured_against_the_initial_stop_not_a_moved_one():
+    """Moving a stop later must not rewrite the risk the trade was taken with."""
+    from backend.backtest.engine import ExitPolicy
+    bt = Backtester(exit_policy=ExitPolicy("be", scale_outs=[(1.0, 0.5)], breakeven_at_r=1.0))
+    trade = BacktestTrade(direction=LONG, entry_ts=0, entry=100.0, stop=99.0,
+                          target=105.0, units=4.0)
+    bt._manage(trade, high=101.5, low=100.2, now=300, contract=TEST_CONTRACT)
+    assert trade.stop == 100.0 and trade.stop_moves == 1
+    assert trade.initial_stop == 99.0
+    assert trade.risk_per_unit == pytest.approx(1.0)
+
+
+def test_a_breakeven_stop_can_cause_an_early_exit():
+    """The book's warning made mechanical: a stop moved into an expected
+    supportive retracement takes the runner out at entry."""
+    from backend.backtest.engine import ExitPolicy
+    bt = Backtester(exit_policy=ExitPolicy("be", scale_outs=[(1.0, 0.5)], breakeven_at_r=1.0))
+    trade = BacktestTrade(direction=LONG, entry_ts=0, entry=100.0, stop=99.0,
+                          target=105.0, units=4.0)
+    bt._manage(trade, high=101.5, low=100.2, now=300, contract=TEST_CONTRACT)
+    closed = bt._manage(trade, high=101.0, low=99.8, now=600, contract=TEST_CONTRACT)
+    assert closed is True
+    assert trade.exit_reason == "stop_moved"
+    # Half banked at +1R, half out at entry: +0.5R overall rather than a loss.
+    assert trade.r_multiple == pytest.approx(0.5)
+
+
+def test_stop_is_still_checked_before_a_scale_out_in_the_same_bar():
+    from backend.backtest.engine import ExitPolicy
+    bt = Backtester(exit_policy=ExitPolicy("half", scale_outs=[(1.0, 0.5)]))
+    trade = BacktestTrade(direction=LONG, entry_ts=0, entry=100.0, stop=99.0,
+                          target=104.0, units=4.0)
+    closed = bt._manage(trade, high=102.0, low=98.5, now=300, contract=TEST_CONTRACT)
+    assert closed is True
+    assert trade.exit_reason == "stop"
+    assert trade.r_multiple == pytest.approx(-1.0)
+
+
+def test_partial_exits_change_the_realised_r_not_the_risk():
+    """A scaled exit banks less than a full run to target on a winner."""
+    from backend.backtest.engine import ExitPolicy
+    full = Backtester()
+    scaled = Backtester(exit_policy=ExitPolicy("half", scale_outs=[(1.0, 0.5)]))
+
+    def run(bt):
+        trade = BacktestTrade(direction=LONG, entry_ts=0, entry=100.0, stop=99.0,
+                              target=104.0, units=4.0)
+        bt._manage(trade, high=101.5, low=100.2, now=300, contract=TEST_CONTRACT)
+        bt._manage(trade, high=104.5, low=101.0, now=600, contract=TEST_CONTRACT)
+        return trade
+
+    assert run(full).r_multiple == pytest.approx(4.0)
+    # Half out at +1R, half at +4R.
+    assert run(scaled).r_multiple == pytest.approx(2.5)
+
+
+def test_scaling_out_cuts_the_loss_when_the_trade_reverses():
+    """The variance-reduction mechanism, in one trade.
+
+    Half the position banked at +1R, the rest stopped at -1R, nets zero where
+    the unscaled trade loses a full R. This is what shrinks the spread of
+    outcomes; it is not the same thing as improving the average.
+    """
+    from backend.backtest.engine import ExitPolicy
+    scaled = Backtester(exit_policy=ExitPolicy("half", scale_outs=[(1.0, 0.5)]))
+    trade = BacktestTrade(direction=LONG, entry_ts=0, entry=100.0, stop=99.0,
+                          target=110.0, units=4.0)
+    scaled._manage(trade, high=101.2, low=100.1, now=300, contract=TEST_CONTRACT)
+    assert trade.remaining_units == 2.0
+    closed = scaled._manage(trade, high=100.5, low=98.5, now=600, contract=TEST_CONTRACT)
+    assert closed is True
+    assert trade.r_multiple == pytest.approx(0.0)
+
+    unscaled = Backtester()
+    plain = BacktestTrade(direction=LONG, entry_ts=0, entry=100.0, stop=99.0,
+                          target=110.0, units=4.0)
+    unscaled._manage(plain, high=101.2, low=100.1, now=300, contract=TEST_CONTRACT)
+    unscaled._manage(plain, high=100.5, low=98.5, now=600, contract=TEST_CONTRACT)
+    assert plain.r_multiple == pytest.approx(-1.0)
+
+
+def test_scaling_out_also_caps_the_winner():
+    """The other half of the trade-off, so the comparison stays honest."""
+    from backend.backtest.engine import ExitPolicy
+    scaled = Backtester(exit_policy=ExitPolicy("half", scale_outs=[(1.0, 0.5)]))
+    trade = BacktestTrade(direction=LONG, entry_ts=0, entry=100.0, stop=99.0,
+                          target=110.0, units=4.0)
+    scaled._manage(trade, high=101.2, low=100.1, now=300, contract=TEST_CONTRACT)
+    scaled._manage(trade, high=110.5, low=101.0, now=600, contract=TEST_CONTRACT)
+    # Half at +1R and half at +10R averages +5.5R, against +10R unscaled.
+    assert trade.r_multiple == pytest.approx(5.5)

@@ -46,6 +46,13 @@ def health() -> Dict[str, Any]:
     }
 
 
+@router.get("/exit-policies")
+def exit_policies() -> Dict[str, Any]:
+    """The position-management policies the backtester can replay."""
+    from backend.backtest.engine import EXIT_POLICIES
+    return {"policies": {name: p.as_dict() for name, p in EXIT_POLICIES.items()}}
+
+
 @router.get("/agents")
 def agents() -> Dict[str, Any]:
     service = get_service()
@@ -118,6 +125,8 @@ def backtest(
     step_minutes: int = Query(5, ge=1, le=60),
     require_killzone: Optional[bool] = Query(None),
     include_trades: bool = Query(True),
+    exit_policy: Optional[str] = Query(
+        None, description="all_at_target, half_at_1R, thirds_1R_2R, ..."),
 ) -> Dict[str, Any]:
     """Replay the farm over stored history.
 
@@ -126,7 +135,8 @@ def backtest(
     service = get_service()
     out = service.backtest(symbol=symbol, days=days, step_minutes=step_minutes,
                            require_killzone=require_killzone,
-                           include_trades=include_trades)
+                           include_trades=include_trades,
+                           exit_policy=exit_policy)
     out["disclaimer"] = DISCLAIMER
     return out
 

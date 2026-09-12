@@ -92,6 +92,7 @@ python -m backend.cli decide                  # run the farm now
 python -m backend.cli decide --killzone       # enforce session gating
 python -m backend.cli seed --days 30          # download history
 python -m backend.cli backtest --days 14      # replay over stored history
+python -m backend.cli backtest --exit-policy half_at_1R
 
 uvicorn backend.app:app --reload              # then open /ict
 ```
@@ -106,6 +107,7 @@ uvicorn backend.app:app --reload              # then open /ict
 | `GET /api/ict/agents` | Roster and active configuration |
 | `GET /api/ict/sessions` | Killzone windows and the current session |
 | `GET /api/ict/backtest` | Walk-forward replay over stored history |
+| `GET /api/ict/exit-policies` | Position-management policies the replay can use |
 | `POST /api/ict/admin/ingest` | Pull latest candles (needs `x-admin-key`) |
 | `POST /api/ict/admin/seed` | Backfill history (needs `x-admin-key`) |
 

@@ -12,6 +12,7 @@ be queued behind size at the same price.
 from __future__ import annotations
 
 import logging
+import math
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
@@ -29,6 +30,70 @@ log = logging.getLogger("ict.backtest")
 
 
 @dataclass
+class ExitLeg:
+    """One partial fill out of a position."""
+    ts: int
+    price: float
+    units: float
+    reason: str
+    r_at_exit: float          # R on this leg, measured on the initial stop distance
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {
+            "ts": self.ts, "price": round(self.price, 2), "units": self.units,
+            "reason": self.reason, "r_at_exit": round(self.r_at_exit, 3),
+        }
+
+
+@dataclass
+class ExitPolicy:
+    """How a position is reduced once it is working.
+
+    Chapter 15 distinguishes three reasons to reduce: an objective was
+    reached, expected behaviour weakened, or an operational consideration
+    changed commitment. Only the first is mechanical, so only the first is
+    modelled here; the other two are discretionary and would need a rule the
+    source does not supply.
+
+    `scale_outs` is a list of (R multiple, fraction of the initial position).
+    Fractions are floored to whole contracts, because a position of one
+    contract cannot be scaled out of at all.
+    """
+    name: str = "all_at_target"
+    scale_outs: List[Tuple[float, float]] = field(default_factory=list)
+    breakeven_at_r: Optional[float] = None     # move the stop to entry at this R
+    trail_after_r: Optional[float] = None      # begin trailing at this R
+    trail_distance_r: float = 1.0
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {
+            "name": self.name,
+            "scale_outs": [[r, f] for r, f in self.scale_outs],
+            "breakeven_at_r": self.breakeven_at_r,
+            "trail_after_r": self.trail_after_r,
+            "trail_distance_r": self.trail_distance_r,
+        }
+
+
+# Named policies for comparison. The book's own management example is a
+# three-unit short scaled out in thirds, so that shape is included.
+EXIT_POLICIES: Dict[str, ExitPolicy] = {
+    "all_at_target": ExitPolicy("all_at_target"),
+    "half_at_1R": ExitPolicy("half_at_1R", scale_outs=[(1.0, 0.5)]),
+    "half_at_1R_breakeven": ExitPolicy("half_at_1R_breakeven",
+                                       scale_outs=[(1.0, 0.5)], breakeven_at_r=1.0),
+    "half_at_2R": ExitPolicy("half_at_2R", scale_outs=[(2.0, 0.5)]),
+    "thirds_1R_2R": ExitPolicy("thirds_1R_2R",
+                               scale_outs=[(1.0, 1 / 3), (2.0, 1 / 3)]),
+    "thirds_1R_2R_breakeven": ExitPolicy("thirds_1R_2R_breakeven",
+                                         scale_outs=[(1.0, 1 / 3), (2.0, 1 / 3)],
+                                         breakeven_at_r=1.0),
+    "half_at_1R_trail": ExitPolicy("half_at_1R_trail", scale_outs=[(1.0, 0.5)],
+                                   trail_after_r=1.5, trail_distance_r=1.0),
+}
+
+
+@dataclass
 class BacktestTrade:
     direction: str
     entry_ts: int
@@ -36,6 +101,11 @@ class BacktestTrade:
     stop: float
     target: float
     units: float
+    initial_units: float = 0.0
+    remaining_units: float = 0.0
+    initial_stop: float = 0.0
+    legs: List[ExitLeg] = field(default_factory=list)
+    stop_moves: int = 0
     exit_ts: Optional[int] = None
     exit_price: Optional[float] = None
     exit_reason: str = "open"
@@ -49,14 +119,39 @@ class BacktestTrade:
     session: Optional[str] = None
     narrative: str = ""
 
+    def __post_init__(self) -> None:
+        if not self.initial_units:
+            self.initial_units = self.units
+        if not self.remaining_units:
+            self.remaining_units = self.units
+        if not self.initial_stop:
+            self.initial_stop = self.stop
+
+    @property
+    def risk_per_unit(self) -> float:
+        """Distance to the *initial* stop.
+
+        Every R figure is measured against this, so moving a stop later never
+        rewrites the risk the trade was taken with.
+        """
+        return abs(self.entry - self.initial_stop) or 1e-9
+
+    def r_at(self, price: float) -> float:
+        sign = 1.0 if self.direction == "LONG" else -1.0
+        return sign * (float(price) - self.entry) / self.risk_per_unit
+
     def as_dict(self) -> Dict[str, Any]:
         return {
             "direction": self.direction,
             "entry_ts": self.entry_ts,
             "entry": round(self.entry, 2),
             "stop": round(self.stop, 2),
+            "initial_stop": round(self.initial_stop, 2),
             "target": round(self.target, 2),
             "units": self.units,
+            "initial_units": self.initial_units,
+            "legs": [leg.as_dict() for leg in self.legs],
+            "stop_moves": self.stop_moves,
             "exit_ts": self.exit_ts,
             "exit_price": round(self.exit_price, 2) if self.exit_price is not None else None,
             "exit_reason": self.exit_reason,
@@ -117,7 +212,8 @@ class Backtester:
                  step_minutes: int = 5,
                  max_hold_minutes: int = 240,
                  limit_expiry_minutes: int = 30,
-                 bars: int = 250):
+                 bars: int = 250,
+                 exit_policy: Optional[ExitPolicy] = None):
         self.farm = farm or AgentFarm()
         self.starting_equity = float(starting_equity)
         self.risk_per_trade = float(risk_per_trade)
@@ -125,6 +221,7 @@ class Backtester:
         self.max_hold_minutes = int(max_hold_minutes)
         self.limit_expiry_minutes = int(limit_expiry_minutes)
         self.bars = int(bars)
+        self.exit_policy = exit_policy or EXIT_POLICIES["all_at_target"]
 
     # -- frame preparation -------------------------------------------------
     def _prepare(self, df_1m: pd.DataFrame, timeframes: List[str]) -> Dict[str, pd.DataFrame]:
@@ -311,7 +408,8 @@ class Backtester:
 
         # Close anything still open at the end of the sample, at the last price.
         if open_trade is not None:
-            self._close(open_trade, float(c_arr[-1]), int(t_arr[-1]), "end_of_sample", contract)
+            self._close_remaining(open_trade, float(c_arr[-1]), int(t_arr[-1]),
+                                  "end_of_sample", contract)
             equity += open_trade.pnl
             result.trades.append(open_trade)
             result.equity_curve.append((int(t_arr[-1]), equity))
@@ -324,53 +422,140 @@ class Backtester:
     # -- position management ----------------------------------------------
     def _manage(self, trade: BacktestTrade, high: float, low: float,
                 now: int, contract: Contract) -> bool:
-        risk = abs(trade.entry - trade.stop) or 1e-9
+        """Advance one bar. Returns True when the position is fully closed.
+
+        Order of checks within the bar is deliberate and pessimistic: the stop
+        is tested before any favourable level, because a one-minute bar does
+        not say which came first and Appendix D forbids defaulting to the
+        favourable sequence.
+        """
+        risk = trade.risk_per_unit
         if trade.direction == "LONG":
             trade.mae_r = min(trade.mae_r, (low - trade.entry) / risk)
             trade.mfe_r = max(trade.mfe_r, (high - trade.entry) / risk)
-            # Stop first when both levels are inside one bar: the pessimistic
-            # assumption, since 1m bars do not say which came first.
-            if low <= trade.stop:
-                self._close(trade, trade.stop, now, "stop", contract)
-                return True
-            if high >= trade.target:
-                self._close(trade, trade.target, now, "target", contract)
-                return True
+            stop_hit = low <= trade.stop
+            target_hit = high >= trade.target
         else:
             trade.mae_r = min(trade.mae_r, (trade.entry - high) / risk)
             trade.mfe_r = max(trade.mfe_r, (trade.entry - low) / risk)
-            if high >= trade.stop:
-                self._close(trade, trade.stop, now, "stop", contract)
-                return True
-            if low <= trade.target:
-                self._close(trade, trade.target, now, "target", contract)
+            stop_hit = high >= trade.stop
+            target_hit = low <= trade.target
+
+        if stop_hit:
+            self._close_remaining(trade, trade.stop, now,
+                                  "stop" if trade.stop_moves == 0 else "stop_moved",
+                                  contract)
+            return True
+
+        # Scale-outs, in order, each only once.
+        for level_r, fraction in self.exit_policy.scale_outs:
+            if any(leg.reason == f"scale_{level_r:g}R" for leg in trade.legs):
+                continue
+            level = self._price_at_r(trade, level_r)
+            reached = high >= level if trade.direction == "LONG" else low <= level
+            if not reached:
+                continue
+            units = self._scale_units(trade, fraction)
+            if units <= 0:
+                # A one-contract position cannot be scaled out of. The book's
+                # own $50-budget example buys exactly one contract.
+                continue
+            self._book_leg(trade, level, units, now, f"scale_{level_r:g}R", contract)
+            if trade.remaining_units <= 0:
+                self._finalise(trade, now, contract)
                 return True
 
+        # Protective stop moves, applied after any scale-out on the same bar.
+        current_r = trade.mfe_r
+        if (self.exit_policy.breakeven_at_r is not None
+                and trade.stop_moves == 0
+                and current_r >= self.exit_policy.breakeven_at_r):
+            # Moving the stop to entry can cause an early exit in an expected
+            # supportive retracement; that cost is exactly what the comparison
+            # is meant to expose.
+            trade.stop = trade.entry
+            trade.stop_moves += 1
+
+        if self.exit_policy.trail_after_r is not None and current_r >= self.exit_policy.trail_after_r:
+            trail_r = current_r - self.exit_policy.trail_distance_r
+            trailed = self._price_at_r(trade, trail_r)
+            if trade.direction == "LONG" and trailed > trade.stop:
+                trade.stop = trailed
+                trade.stop_moves += 1
+            elif trade.direction == "SHORT" and trailed < trade.stop:
+                trade.stop = trailed
+                trade.stop_moves += 1
+
+        if target_hit:
+            self._close_remaining(trade, trade.target, now, "target", contract)
+            return True
+
         if now - trade.entry_ts >= self.max_hold_minutes * 60:
-            price = (high + low) / 2.0
-            self._close(trade, price, now, "time_stop", contract)
+            self._close_remaining(trade, (high + low) / 2.0, now, "time_stop", contract)
             return True
         return False
 
     @staticmethod
-    def _close(trade: BacktestTrade, price: float, ts: int, reason: str,
-               contract: Contract) -> None:
-        """Close the position and book both gross and net results.
-
-        Costs are charged on the round trip. The study's Appendix C makes the
-        point plainly: a gross 2.00 reward-to-risk is a net 1.65, and ignoring
-        that difference makes every backtest look better than the account
-        would have.
-        """
+    def _price_at_r(trade: BacktestTrade, r: float) -> float:
         sign = 1.0 if trade.direction == "LONG" else -1.0
-        risk = abs(trade.entry - trade.stop) or 1e-9
-        trade.exit_price = float(price)
-        trade.exit_ts = int(ts)
-        trade.exit_reason = reason
-        trade.r_multiple = sign * (price - trade.entry) / risk
-        trade.gross_pnl = contract.gross_pnl(trade.entry, price, trade.units, trade.direction)
-        trade.costs = contract.costs(trade.units)
+        return trade.entry + sign * r * trade.risk_per_unit
+
+    @staticmethod
+    def _scale_units(trade: BacktestTrade, fraction: float) -> float:
+        """Whole contracts to release, never more than remain.
+
+        Floored, because a fraction of a contract cannot be traded, and capped
+        so an exit order can never exceed the remaining quantity. Chapter 15
+        warns that an uncancelled order sized for an earlier quantity can
+        create an extra exit or reverse the position.
+        """
+        wanted = math.floor(trade.initial_units * fraction)
+        if wanted <= 0:
+            return 0.0
+        # Never close the whole position on a scale-out; a runner must survive.
+        return float(min(wanted, max(trade.remaining_units - 1, 0)))
+
+    def _book_leg(self, trade: BacktestTrade, price: float, units: float,
+                  ts: int, reason: str, contract: Contract) -> None:
+        units = min(units, trade.remaining_units)
+        if units <= 0:
+            return
+        trade.legs.append(ExitLeg(ts=int(ts), price=float(price), units=float(units),
+                                  reason=reason, r_at_exit=trade.r_at(price)))
+        trade.remaining_units -= units
+        trade.gross_pnl += contract.gross_pnl(trade.entry, price, units, trade.direction)
+        trade.costs += contract.costs(units)
+
+    def _close_remaining(self, trade: BacktestTrade, price: float, ts: int,
+                         reason: str, contract: Contract) -> None:
+        self._book_leg(trade, price, trade.remaining_units, ts, reason, contract)
+        self._finalise(trade, ts, contract, reason)
+
+    def _finalise(self, trade: BacktestTrade, ts: int, contract: Contract,
+                  reason: Optional[str] = None) -> None:
+        """Close the books on a position, in R measured on the initial risk.
+
+        This reproduces the book's management arithmetic: three units entered
+        at 140 protected at 146 carry 18 point-units of risk, and exits at
+        130, 134 and 138 realise 18 point-units, which is 1.00 times initial
+        risk rather than the 4.00 a full exit at the far objective would give.
+        """
         trade.pnl = trade.gross_pnl - trade.costs
+        trade.exit_ts = int(ts)
+        trade.exit_reason = reason or (trade.legs[-1].reason if trade.legs else "closed")
+        trade.remaining_units = 0.0
+        if trade.legs:
+            total_units = sum(leg.units for leg in trade.legs)
+            trade.exit_price = (
+                sum(leg.price * leg.units for leg in trade.legs) / total_units
+                if total_units else trade.entry
+            )
+            # R on the whole position: each leg's R weighted by the share of
+            # the initial position it closed.
+            trade.r_multiple = sum(
+                leg.r_at_exit * (leg.units / trade.initial_units) for leg in trade.legs
+            ) if trade.initial_units else 0.0
+        trade.units = trade.initial_units
 
 
 def compute_metrics(trades: List[BacktestTrade], starting_equity: float,
