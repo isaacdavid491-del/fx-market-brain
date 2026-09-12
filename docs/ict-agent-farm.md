@@ -149,17 +149,35 @@ accounting error.
 
 ### What the synthetic backtest does and does not tell you
 
-Run against the synthetic feed, the farm loses money. It should. That feed is
-a random walk with no exploitable structure, so no strategy can have an edge
-on it, and the conservative fill rules guarantee a slow bleed. A 30-day replay
-produces roughly 15 to 20 trades from about 7,000 decision points, which
-confirms the selectivity is working, and it exercises every code path end to
-end.
+The synthetic feed is a random walk, so no strategy can have a real edge on
+it. A result near break-even is therefore the *expected* outcome and the only
+one worth checking for. A 30-day replay at the default settings:
 
-What it cannot do is say whether the ICT model has an edge on real NASDAQ
-prices. That question needs real history: seed a token-backed feed and run the
-backtest against that. Resist the temptation to tune thresholds against the
-synthetic numbers — on a random walk you would only be fitting noise.
+| | |
+|---|---|
+| decision points | 6,877 |
+| plans produced | 21 |
+| trades taken | 17 |
+| win rate | 29% |
+| expectancy | +0.10 R |
+| profit factor | 1.15 |
+| max drawdown | 3.4% |
+
+That is fair odds: a 29% hit rate against a median 2.3:1 reward-to-risk is
+close to a coin flip, which is exactly what a random walk should produce. The
+21 plans from nearly 7,000 decision points also confirm the selectivity is
+working out to one or two setups a day.
+
+This measurement does earn its keep. An earlier version of the stop logic
+placed stops as close as 0.35 ATR from entry, inside a single bar's range, and
+the same replay returned -13 R with a 7% win rate — noise was taking out
+positions before the idea could be right or wrong. That is what the
+`min_stop_atr` floor fixes, and the backtest is how the flaw was found.
+
+What the synthetic run cannot tell you is whether the ICT model has an edge on
+real NASDAQ prices. That needs real history: seed a token-backed feed and
+replay against that. Resist tuning thresholds against the synthetic numbers —
+on a random walk you would only be fitting noise.
 
 ## Configuration
 
