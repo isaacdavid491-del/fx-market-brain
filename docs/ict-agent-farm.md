@@ -32,11 +32,27 @@ orchestrator does all the combining.
 | `liquidity_draw` | analyst | 1.5 | Which pool of resting orders is price most likely drawn to? |
 | `fair_value_gap` | analyst | 1.6 | Is price in, or approaching, an unfilled 3-bar imbalance? |
 | `order_block` | analyst | 1.6 | Is price at an unmitigated order block, or retesting a breaker? |
+| `inversion` | analyst | 1.8 | Has a gap failed on a *close* and inverted? |
+| `first_presented_gap` | analyst | 1.5 | Which gap since the open is chronological, displacing or reflection? |
+| `rejection_block` | analyst | 1.5 | Is price crossing the body reference, the wick extreme, or neither? |
+| `session_range` | analyst | 1.7 | Where is price inside the frozen premarket or opening range? |
+| `opening_gap` | analyst | 1.4 | Is the RTH or new-week opening gap midpoint a draw? |
 | `premium_discount` | analyst | 1.3 | Is price cheap or expensive inside its dealing range, and in the OTE band? |
-| `power_of_three` | analyst | 1.4 | Where are we in the daily accumulation → manipulation → distribution cycle? |
+| `power_of_three` | analyst | 1.4 | Where are we in the daily accumulation, manipulation, distribution cycle? |
+| `venom` | analyst | 1.3 | Has the 08:00-09:30 reference been raided and closed beyond? |
+| `delivery_resistance` | analyst | 1.2 | Is this route low- or high-resistance delivery? |
+| `volume_imbalance` | analyst | 1.1 | Is there a body separation or suspension block near price? |
+| `obsidian_wicks` | analyst | 0.9 | What interval do opposing wick midpoints define? |
 | `smt_divergence` | analyst | 1.5 | Does the correlated index confirm this high or low, or refuse to? |
 | `killzone` | gate | — | Is this a window worth trading at all? |
+| `checkpoint` | gate | — | Is this one of the Model 13 search checkpoints? |
 | `risk_manager` | risk | — | Is there any reason not to trade right now? |
+
+Ten of the analysts come from the study book; `docs/book-teachings.md` maps
+each to its chapter. Their weights track how precisely the source specifies
+them: inversion is weighted high because its qualifying event is stated
+exactly, while the Obsidian wick measurement is weighted lowest because the
+source explicitly leaves its qualification unresolved.
 
 Analysts vote. Gate and risk agents do not vote: they multiply the farm's
 conviction and can veto outright.
@@ -46,8 +62,11 @@ conviction and can veto outright.
 1. **Analysts vote.** Each contributes `score x confidence x weight`, where
    score is signed in `[-1, 1]` and confidence is separate so that "mildly
    bullish and certain" is distinguishable from "very bullish and guessing".
-2. **Normalise.** The net vote is divided by total analyst weight, so adding
-   an agent cannot inflate conviction by itself.
+2. **Normalise.** The net vote is a confidence-weighted *mean* of the scores.
+   An agent that abstains has zero confidence and leaves both the numerator
+   and the denominator, so it neither argues for a trade nor against one.
+   Dividing by total roster weight instead, as an earlier version did, meant
+   installing more specialists silently throttled every other agent.
 3. **Gate.** The killzone and risk agents multiply the result. Any veto ends
    the decision immediately.
 4. **Check agreement.** Of the analysts that expressed a view, at least
@@ -226,3 +245,25 @@ rationale: that text is what appears on the dashboard and in the CLI.
 
 An agent that raises is caught, reported on its own signal, and treated as an
 abstention. One broken specialist cannot take the farm down.
+
+
+## Exit policies
+
+Position management is selectable. The roster is at
+`GET /api/ict/exit-policies`, or `--exit-policy` on the backtest command.
+
+| Policy | Management | Source |
+|---|---|---|
+| `all_at_target` | Everything at the objective | baseline |
+| `half_at_1R` | Half banked at one times risk | — |
+| `half_at_1R_breakeven` | Half at 1R, then stop to entry | — |
+| `half_at_2R`, `thirds_1R_2R` | Scaled at R multiples | — |
+| `progressive_stop` | Stop distance cut 25/50/100% at quarter, half and three-quarter progress | ch. 22 |
+| `progressive_stop_half_at_1R` | The same ladder alongside a partial | ch. 22 |
+| `gap_bulk_at_half` | 75% off at the half-gap objective | ch. 26 variant A |
+| `gap_ladder` | 2 units at half gap, 7 at closure, 3 runners at extensions | ch. 26 variant B |
+
+`RiskLadder` implements chapter 27's dynamic sizing separately: halve risk
+after a full planned loss, restore once half of it is recovered, halve after
+five consecutive wins, with an explicit floor. It is off by default so it
+cannot confound an exit-policy comparison.

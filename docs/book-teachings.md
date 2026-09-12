@@ -515,3 +515,99 @@ inside it.
 | Enigma | Presented as a personal approach; the lecture does not release the algorithm and the book refuses to publish a formula. |
 | Lunch retracement entry | Its prerequisites are specific and conditional, and the book is explicit it "is not a rule to buy every down morning at noon". |
 | The 70% opening-gap and 90% gap-revisit figures | Both are described as claims to measure, not established results. |
+
+
+---
+
+# Did edition 0.6 make the farm better?
+
+Two separate questions, measured separately.
+
+## The four new agents: no measurable effect
+
+Twenty-one agents against seventeen, same data, same exit policy:
+
+| | 17 agents | 21 agents |
+|---|---|---|
+| Plans produced | 105 | 107 |
+| Trades | 59 | 57 |
+| Expectancy | -0.198 R | -0.200 R |
+
+Paired on the 42 trades both configurations took, the difference is **exactly
+zero**, with the standard deviation unchanged. That is not a coincidence and
+it is worth understanding: the new agents vote on *whether* to trade, but none
+of them contributes a level the plan builder anchors a stop or target to. A
+trade entered at the same moment therefore gets an identical plan and an
+identical outcome. All four can do is change which trades are taken, and on
+this sample they barely did.
+
+## The chapter 22 stop ladder: consistently positive, in this simulator
+
+The exit policies were compared paired, on matched trades, across five
+independent synthetic markets. One sample would not have settled it — the
+first run of this comparison gave a paired difference of +0.001 R with
+t = 0.00, and the second, on different data, gave +0.249 R with t = 2.78 for
+the same comparison.
+
+Paired difference in mean R against holding to target:
+
+| Seed | Baseline R | `half_at_1R` | `progressive_stop_half_at_1R` |
+|---|---|---|---|
+| 7 | -0.200 | +0.249 | +0.272 |
+| 23 | +0.022 | +0.177 | +0.154 |
+| 41 | +0.043 | +0.064 | +0.251 |
+| 59 | +0.155 | -0.010 | +0.007 |
+| 83 | -0.216 | +0.167 | +0.173 |
+| **mean** | | **+0.129** (t 2.83) | **+0.171** (t 3.66) |
+
+Chapter 22's ladder combined with a partial is positive in **all five**
+markets. Banking half at one times risk is positive in four of five. Both cut
+the standard deviation of per-trade returns by about a third, in every single
+market.
+
+The ladder on its own, with no partial, is the weakest of the new policies and
+has the lowest win rate of any policy tested. That is consistent with the
+source, which describes it as operating while partials are already being
+banked: tightening protection without taking anything off simply gets the
+position stopped more often.
+
+## Why this is not yet a finding about markets
+
+The effect is consistent and the across-seed t-statistic is strong, but the
+measurement lives inside a simulator whose frictions could produce it
+mechanically:
+
+- The synthetic feed is a geometric random walk, so price carries a small
+  upward drift even though the log steps have none.
+- Trades carry a four-hour time stop that exits at the bar midpoint, and the
+  median target is around 3.5 R, so most positions never reach their
+  objective. Banking at 1 R captures value from the many trades that touch
+  1 R and then stall, which is a property of that exit grid rather than of
+  the market.
+- Within a bar the stop is assumed to fill before any favourable level.
+
+So the honest statement is narrow: **inside this backtester, on synthetic
+data, scaling out with a progressive stop consistently improves mean R and
+reliably cuts variance.** Whether it survives on real NASDAQ prices is
+untested, and the book's own warning stands: one path, or one simulator,
+cannot establish the best policy across a sample.
+
+## A correction to the previous round
+
+The earlier conclusion in this document was that partial exits do not improve
+expectancy, based on a single paired sample with t = 0.00. That was
+under-powered. Five markets give a consistently positive point estimate. The
+variance claim from that round survives unchanged and is the more solid of the
+two.
+
+## The bug that made all of this measurable
+
+The synthetic feed seeded its generator from Python's built-in `hash()`, which
+is randomised per process. Every backtest run as a separate process therefore
+received a **different price series**, so no two runs in this repository's
+history were ever comparable, and the swing between a +0.147 R expectancy in
+one session and -0.218 R in the next was measuring different markets rather
+than different strategies. Seeding from `zlib.crc32` fixes it, and a test now
+spawns subprocesses to prove determinism holds across process boundaries.
+
+Every number in this section was produced after that fix.

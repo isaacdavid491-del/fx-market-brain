@@ -4,7 +4,7 @@ Two market models behind one FastAPI service:
 
 - **FX signal model** — a gradient-boosted classifier over multi-timeframe
   features for a currency pair. Served at `/` and `/api/signal`.
-- **NASDAQ ICT agent farm** — seventeen specialist agents that read NASDAQ
+- **NASDAQ ICT agent farm** — twenty-one specialist agents that read NASDAQ
   price action through the ICT (Inner Circle Trader) lens and argue their way
   to a single trade plan, priced in a real contract with costs. Served at
   `/ict` and `/api/ict/*`.
@@ -19,7 +19,7 @@ Both read the same 1-minute candle store, so their timeframes always agree.
 
 ```bash
 pip install -r requirements-dev.txt
-python -m pytest                       # 129 tests
+python -m pytest                       # 169 tests
 uvicorn backend.app:app --reload       # open http://localhost:8000/ict
 ```
 
@@ -28,7 +28,7 @@ feed so everything is explorable offline. Every response says which provider
 produced it.
 
 ```bash
-python -m backend.cli agents           # list the seventeen agents
+python -m backend.cli agents           # list the twenty-one agents
 python -m backend.cli decide           # run the farm now, with full reasoning
 python -m backend.cli backtest --days 14
 python -m backend.cli seed --days 30   # download real history (needs a token)
@@ -36,7 +36,7 @@ python -m backend.cli seed --days 30   # download real history (needs a token)
 
 ## The agent farm in one paragraph
 
-Fifteen analysts each answer one question — where higher-timeframe structure
+Eighteen analysts each answer one question — where higher-timeframe structure
 points, whether structure just broke or changed character, whether stops were
 just raided and rejected, which liquidity pool price is drawn to, whether
 there is an unfilled imbalance, an unmitigated order block or a gap that has
@@ -78,11 +78,11 @@ backend/
   store.py             SQLite candle store and timeframe resampling
   app.py               FastAPI app: FX model plus route registration
   ict/                 ICT primitives, session windows, contract specs
-  agents/              the seventeen agents and the orchestrator
+  agents/              the twenty-one agents and the orchestrator
   data/                OANDA and synthetic providers, context assembly
   backtest/            walk-forward engine and metrics
   service.py, api_ict.py, cli.py
-tests/                 129 tests
+tests/                 169 tests
 docs/ict-agent-farm.md
 docs/book-teachings.md
 ```
