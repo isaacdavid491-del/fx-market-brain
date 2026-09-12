@@ -109,6 +109,22 @@ def cmd_backtest(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_validate(args: argparse.Namespace) -> int:
+    """Run the real-data validation and print a report."""
+    from backend.validate import format_report, run
+
+    report = run(symbol=args.symbol, days=args.days, step_minutes=args.step,
+                 equity=args.equity or 100_000.0, contract=args.contract,
+                 require_killzone=not args.ignore_killzone,
+                 do_seed=not args.no_seed)
+    if args.json:
+        print(json.dumps(report, indent=2))
+    else:
+        print(format_report(report))
+    # A synthetic run is not a validation, and the exit code says so.
+    return 0 if report.get("data_is_real") else 2
+
+
 def cmd_seed(args: argparse.Namespace) -> int:
     print(json.dumps(get_service().seed(days=args.days, symbol=args.symbol), indent=2))
     return 0
@@ -150,6 +166,20 @@ def build_parser() -> argparse.ArgumentParser:
     seed.add_argument("--symbol")
     seed.add_argument("--days", type=int, default=30)
     seed.set_defaults(func=cmd_seed)
+
+    validate = sub.add_parser(
+        "validate",
+        help="seed real history and measure the farm against it")
+    validate.add_argument("--symbol")
+    validate.add_argument("--days", type=int, default=60)
+    validate.add_argument("--step", type=int, default=5)
+    validate.add_argument("--equity", type=float)
+    validate.add_argument("--contract", default="MNQ")
+    validate.add_argument("--ignore-killzone", action="store_true")
+    validate.add_argument("--no-seed", action="store_true",
+                          help="use stored history instead of downloading")
+    validate.add_argument("--json", action="store_true")
+    validate.set_defaults(func=cmd_validate)
 
     agents = sub.add_parser("agents", help="list the roster")
     agents.set_defaults(func=cmd_agents)

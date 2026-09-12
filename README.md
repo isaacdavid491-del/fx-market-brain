@@ -19,9 +19,26 @@ Both read the same 1-minute candle store, so their timeframes always agree.
 
 ```bash
 pip install -r requirements-dev.txt
-python -m pytest                       # 169 tests
+python -m pytest                       # 178 tests
 uvicorn backend.app:app --reload       # open http://localhost:8000/ict
 ```
+
+## Testing it against real prices
+
+Every measurement in this repository so far used a synthetic random walk,
+which **cannot** tell you whether the strategy has an edge: ICT describes
+behaviour that exists because real participants exist, and a random walk has
+none of it. To get a real answer you need real bars:
+
+```bash
+export OANDA_TOKEN=your_practice_token
+python -m backend.cli validate --days 60
+```
+
+That seeds real NASDAQ history, replays the farm across several exit policies,
+and pairs them on matched trades. It prints `REAL MARKET DATA` or
+`SYNTHETIC DATA - NOT A TEST OF THE STRATEGY` at the top, and exits non-zero
+in the synthetic case so it cannot be mistaken for a validation run.
 
 Without an `OANDA_TOKEN` the service runs on a deterministic **synthetic**
 feed so everything is explorable offline. Every response says which provider
@@ -82,7 +99,7 @@ backend/
   data/                OANDA and synthetic providers, context assembly
   backtest/            walk-forward engine and metrics
   service.py, api_ict.py, cli.py
-tests/                 169 tests
+tests/                 178 tests
 docs/ict-agent-farm.md
 docs/book-teachings.md
 ```
